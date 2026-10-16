@@ -1,3 +1,4 @@
+import copy
 import io
 import json
 import re
@@ -6,6 +7,7 @@ import uuid
 import urllib.parse
 import urllib.request
 import urllib.error
+import xml.etree.ElementTree as ET
 from enum import Enum
 from typing import List, Dict, Optional, Tuple
 
@@ -196,8 +198,9 @@ LLM_PROVIDERS: Dict[str, Dict] = {
         "base_url": "https://api.groq.com/openai/v1/chat/completions",
         "models": [
             "llama-3.3-70b-versatile",
-            "deepseek-r1-distill-llama-70b",
-            "qwen-qwq-32b",
+            "openai/gpt-oss-120b",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "qwen/qwen3-32b",
             "llama-3.1-8b-instant",
             "Custom Model ID...",
         ],
@@ -1099,8 +1102,589 @@ def add_picture_fitted(
 
 
 # =====================================================================
-# 6. Multi-Layout PowerPoint Rendering Engine (8 Archetypes)
+# 6. Multi-Layout PowerPoint Rendering Engine & Template Inheritance
 # =====================================================================
+
+_NS_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_NS_P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+_NS_R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+
+def _hex_to_rgb_tuple(hex_str: str) -> Optional[Tuple[int, int, int]]:
+    """Parse a 6-character hex string like '1A2B3C' into an (R, G, B) tuple."""
+    cleaned = (hex_str or "").strip().lstrip("#")
+    if len(cleaned) != 6:
+        return None
+    try:
+        return int(cleaned[0:2], 16), int(cleaned[2:4], 16), int(cleaned[4:6], 16)
+    except ValueError:
+        return None
+
+
+def _rgb_to_hex(color: RGBColor) -> str:
+    return f"#{color[0]:02X}{color[1]:02X}{color[2]:02X}"
+
+
+def _luminance(rgb: Tuple[int, int, int]) -> float:
+    """Return perceived luminance (0..255) for contrast decisions."""
+    return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+
+
+def _blend_rgb(c1: Tuple[int, int, int], c2: Tuple[int, int, int], ratio: float) -> RGBColor:
+    """Linearly interpolate from c1 toward c2 by ratio (0.0 to 1.0)."""
+    r = int(round(c1[0] * (1.0 - ratio) + c2[0] * ratio))
+    g = int(round(c1[1] * (1.0 - ratio) + c2[1] * ratio))
+    b = int(round(c1[2] * (1.0 - ratio) + c2[2] * ratio))
+    return RGBColor(max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
+
+
+def _parse_theme_xml_colors_and_fonts(prs: Presentation) -> Tuple[Dict[str, Tuple[int, int, int]], Optional[str], Optional[str]]:
+    """
+    Inspect the Slide Master's Office Theme XML (theme1.xml) to extract scheme colors
+    (dk1, lt1, dk2, lt2, accent1..accent6) and major/minor Latin font typefaces.
+    """
+    colors: Dict[str, Tuple[int, int, int]] = {}
+    font_heading: Optional[str] = None
+    font_body: Optional[str] = None
+
+    try:
+        if not prs.slide_masters:
+            return colors, font_heading, font_body
+        master_part = prs.slide_masters[0].part
+        theme_blob = None
+        for rel in master_part.rels.values():
+            if "theme" in (rel.reltype or "").lower() and hasattr(rel, "target_part"):
+                theme_blob = rel.target_part.blob
+                break
+        if not theme_blob:
+            return colors, font_heading, font_body
+
+        root = ET.fromstring(theme_blob)
+        clr_scheme = root.find(f".//{_NS_A}clrScheme")
+        if clr_scheme is not None:
+            for child in clr_scheme:
+                tag_name = child.tag.split("}")[-1]
+                srgb = child.find(f"{_NS_A}srgbClr")
+                sys_clr = child.find(f"{_NS_A}sysClr")
+                hex_val = None
+                if srgb is not None:
+                    hex_val = srgb.get("val")
+                elif sys_clr is not None:
+                    hex_val = sys_clr.get("lastClr") or sys_clr.get("val")
+                rgb_tuple = _hex_to_rgb_tuple(hex_val or "")
+                if rgb_tuple is not None:
+                    colors[tag_name] = rgb_tuple
+
+        font_scheme = root.find(f".//{_NS_A}fontScheme")
+        if font_scheme is not None:
+            major_latin = font_scheme.find(f"{_NS_A}majorFont/{_NS_A}latin")
+            minor_latin = font_scheme.find(f"{_NS_A}minorFont/{_NS_A}latin")
+            if major_latin is not None:
+                tf = (major_latin.get("typeface") or "").strip()
+                if tf and not tf.startswith("+"):
+                    font_heading = tf
+            if minor_latin is not None:
+                tf = (minor_latin.get("typeface") or "").strip()
+                if tf and not tf.startswith("+"):
+                    font_body = tf
+    except Exception:
+        pass
+
+    return colors, font_heading, font_body
+
+
+def _extract_solid_fill_rgb_from_el(el) -> Optional[Tuple[int, int, int]]:
+    """Extract the first explicit srgbClr inside a solidFill child of an XML element."""
+    if el is None:
+        return None
+    try:
+        for node in el.iter(f"{_NS_A}solidFill"):
+            for sub in node:
+                if sub.tag.endswith("srgbClr"):
+                    rgb = _hex_to_rgb_tuple(sub.get("val", ""))
+                    if rgb is not None:
+                        return rgb
+    except Exception:
+        pass
+    return None
+
+
+def _sample_slide_colors_and_fonts(prs: Presentation) -> Dict[str, object]:
+    """
+    Inspect existing slides and layouts for explicit background colors, vibrant accent shape fills,
+    and explicitly assigned font names (vital for Canva / Slidesgo templates that bypass theme1.xml).
+    """
+    info: Dict[str, object] = {
+        "cover_bg": None,
+        "content_bg": None,
+        "accent": None,
+        "font": None,
+    }
+    try:
+        slide_w = float(prs.slide_width or Inches(13.333))
+        slide_h = float(prs.slide_height or Inches(7.5))
+        slide_area = max(slide_w * slide_h, 1.0)
+
+        containers = list(prs.slides) + list(prs.slide_layouts) + list(prs.slide_masters)
+        for s_idx, container in enumerate(containers):
+            c_sld = container._element.find(f"{_NS_P}cSld")
+            bg_el = c_sld.find(f"{_NS_P}bg") if c_sld is not None else None
+            bg_rgb = _extract_solid_fill_rgb_from_el(bg_el)
+            if bg_rgb is not None:
+                if s_idx == 0 and info["cover_bg"] is None:
+                    info["cover_bg"] = bg_rgb
+                elif info["content_bg"] is None:
+                    info["content_bg"] = bg_rgb
+
+            for shape in getattr(container, "shapes", []):
+                try:
+                    w = float(shape.width or 0)
+                    h = float(shape.height or 0)
+                    area_ratio = (w * h) / slide_area
+                    sp_pr = shape._element.find(f"{_NS_P}spPr")
+                    fill_rgb = _extract_solid_fill_rgb_from_el(sp_pr)
+                    if fill_rgb is not None:
+                        # Full-bleed rectangle acts as a slide background
+                        if area_ratio >= 0.75 and not getattr(shape, "is_placeholder", False):
+                            if s_idx == 0 and info["cover_bg"] is None:
+                                info["cover_bg"] = fill_rgb
+                            elif s_idx > 0 and info["content_bg"] is None:
+                                info["content_bg"] = fill_rgb
+                        else:
+                            # Look for a saturated non-grey accent color
+                            spread = max(fill_rgb) - min(fill_rgb)
+                            lum = _luminance(fill_rgb)
+                            if spread >= 35 and 25 < lum < 235 and info["accent"] is None:
+                                info["accent"] = fill_rgb
+
+                    if info["font"] is None and getattr(shape, "has_text_frame", False):
+                        for para in shape.text_frame.paragraphs:
+                            for run in para.runs:
+                                fname = (run.font.name or "").strip()
+                                if fname and not fname.startswith("+"):
+                                    info["font"] = fname
+                                    break
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return info
+
+
+def extract_template_style(
+    prs: Presentation,
+    fallback_theme_name: str = "Corporate Blue",
+    use_template_colors: bool = True,
+) -> Dict[str, object]:
+    """
+    Build a complete theme dictionary (colors + font_heading + font_body) derived from an uploaded
+    .pptx template, falling back gracefully to `fallback_theme_name` for any missing tokens.
+    """
+    base_theme: Dict[str, object] = dict(BUILTIN_THEMES.get(fallback_theme_name, BUILTIN_THEMES["Corporate Blue"]))
+    scheme_colors, font_heading, font_body = _parse_theme_xml_colors_and_fonts(prs)
+    sampled = _sample_slide_colors_and_fonts(prs)
+
+    resolved_heading = font_heading or sampled.get("font")
+    resolved_body = font_body or resolved_heading
+    base_theme["font_heading"] = resolved_heading
+    base_theme["font_body"] = resolved_body
+
+    if not use_template_colors:
+        return base_theme
+
+    # Determine primary accent color: prefer sampled decorative shape color or non-default scheme accent1
+    OFFICE_DEFAULT_ACCENT1 = (68, 114, 196)  # #4472C4 default Office blue
+    scheme_acc1 = scheme_colors.get("accent1")
+    sampled_acc = sampled.get("accent")
+    if sampled_acc and (scheme_acc1 is None or scheme_acc1 == OFFICE_DEFAULT_ACCENT1):
+        accent_tuple = sampled_acc
+    else:
+        accent_tuple = scheme_acc1 or sampled_acc or scheme_colors.get("accent2")
+
+    # Determine content background color (light vs dark deck)
+    content_bg_tuple = sampled.get("content_bg")
+    if content_bg_tuple is None:
+        lt1 = scheme_colors.get("lt1", (255, 255, 255))
+        dk1 = scheme_colors.get("dk1", (15, 37, 55))
+        content_bg_tuple = lt1
+
+    cover_bg_tuple = sampled.get("cover_bg") or scheme_colors.get("dk2") or scheme_colors.get("dk1") or content_bg_tuple
+
+    if accent_tuple is None and sampled.get("content_bg") is None and not scheme_colors:
+        return base_theme
+
+    if accent_tuple is None:
+        acc_c = base_theme["accent"]
+        accent_tuple = (acc_c[0], acc_c[1], acc_c[2])
+
+    content_is_dark = _luminance(content_bg_tuple) < 128
+    cover_is_dark = _luminance(cover_bg_tuple) < 128
+
+    if content_is_dark:
+        card_bg = _blend_rgb(content_bg_tuple, (255, 255, 255), 0.08)
+        card_border = _blend_rgb(content_bg_tuple, accent_tuple, 0.35)
+        title_content = RGBColor(245, 247, 252)
+        body_content = RGBColor(200, 206, 220)
+        takeaway_bg = _blend_rgb(content_bg_tuple, accent_tuple, 0.28)
+        takeaway_text = RGBColor(255, 255, 255)
+    else:
+        dk_text = scheme_colors.get("dk1") or (22, 33, 48)
+        if _luminance(dk_text) > 140:
+            dk_text = (22, 33, 48)
+        card_bg = RGBColor(255, 255, 255)
+        card_border = _blend_rgb((255, 255, 255), accent_tuple, 0.25)
+        title_content = RGBColor(*dk_text)
+        body_content = _blend_rgb(dk_text, (120, 128, 140), 0.35)
+        takeaway_bg = RGBColor(*dk_text) if _luminance(dk_text) < 95 else _blend_rgb(accent_tuple, (15, 23, 42), 0.45)
+        takeaway_text = RGBColor(255, 255, 255)
+
+    if cover_is_dark:
+        title_cover = RGBColor(255, 255, 255)
+        subtitle_cover = _blend_rgb((255, 255, 255), accent_tuple, 0.22)
+    else:
+        title_cover = title_content
+        subtitle_cover = body_content
+
+    base_theme.update({
+        "bg_cover": RGBColor(*cover_bg_tuple),
+        "bg_section": _blend_rgb(cover_bg_tuple, accent_tuple, 0.18),
+        "bg_content": RGBColor(*content_bg_tuple),
+        "card_bg": card_bg,
+        "card_border": card_border,
+        "accent": RGBColor(*accent_tuple),
+        "title_cover": title_cover,
+        "subtitle_cover": subtitle_cover,
+        "title_content": title_content,
+        "body_content": body_content,
+        "takeaway_bg": takeaway_bg,
+        "takeaway_text": takeaway_text,
+    })
+    return base_theme
+
+
+@st.cache_data(show_spinner=False)
+def inspect_template_summary(template_bytes: bytes) -> Dict[str, str]:
+    """Return a concise summary of an uploaded .pptx template (slide count, fonts, accent color)."""
+    try:
+        prs = Presentation(io.BytesIO(template_bytes))
+        style = extract_template_style(prs, use_template_colors=True)
+        font_h = style.get("font_heading") or "Default"
+        accent_hex = _rgb_to_hex(style["accent"])
+        bg_hex = _rgb_to_hex(style["bg_content"])
+        return {
+            "slides": str(len(prs.slides)),
+            "layouts": str(len(prs.slide_layouts)),
+            "font": str(font_h),
+            "accent": accent_hex,
+            "bg": bg_hex,
+        }
+    except Exception:
+        return {"slides": "?", "layouts": "?", "font": "Default", "accent": "#0072CE", "bg": "#F4F7FB"}
+
+
+def _scale_xml_xfrm(root_el, scale_x: float, scale_y: float) -> None:
+    """Scale DrawingML <a:off> and <a:ext> coordinates inside an XML subtree."""
+    for xfrm in root_el.iter(f"{_NS_A}xfrm"):
+        # Only scale top-level shape transforms, not child coordinate spaces inside groups
+        off = xfrm.find(f"{_NS_A}off")
+        ext = xfrm.find(f"{_NS_A}ext")
+        ch_off = xfrm.find(f"{_NS_A}chOff")
+        if ch_off is not None:
+            continue
+        if off is not None:
+            try:
+                x = int(off.get("x", "0"))
+                y = int(off.get("y", "0"))
+                off.set("x", str(int(round(x * scale_x))))
+                off.set("y", str(int(round(y * scale_y))))
+            except ValueError:
+                pass
+        if ext is not None:
+            try:
+                cx = int(ext.get("cx", "0"))
+                cy = int(ext.get("cy", "0"))
+                ext.set("cx", str(int(round(cx * scale_x))))
+                ext.set("cy", str(int(round(cy * scale_y))))
+            except ValueError:
+                pass
+
+
+def _scale_template_to_widescreen(prs: Presentation, target_w_in: float = 13.333, target_h_in: float = 7.5) -> None:
+    """
+    Normalize a presentation's canvas to 16:9 (13.333 x 7.5 in) and proportionally scale shapes
+    on Slide Masters, Slide Layouts, and existing Slides so 10x5.625 (Canva/Google Slides) or 4:3
+    templates fill the entire widescreen slide without leaving blank margins.
+    """
+    target_w = int(Inches(target_w_in))
+    target_h = int(Inches(target_h_in))
+    orig_w = int(prs.slide_width or target_w)
+    orig_h = int(prs.slide_height or target_h)
+
+    if abs(orig_w - target_w) > 1000 or abs(orig_h - target_h) > 1000:
+        scale_x = target_w / float(orig_w)
+        scale_y = target_h / float(orig_h)
+        for master in prs.slide_masters:
+            _scale_xml_xfrm(master._element, scale_x, scale_y)
+        for layout in prs.slide_layouts:
+            _scale_xml_xfrm(layout._element, scale_x, scale_y)
+        for slide in prs.slides:
+            _scale_xml_xfrm(slide._element, scale_x, scale_y)
+
+    prs.slide_width = target_w
+    prs.slide_height = target_h
+
+
+def _is_decorative_or_branding_shape(shape, slide_h_emu: int) -> bool:
+    """
+    Return True if a shape on a sample template slide is part of the visual template
+    (background image, decorative vector graphic, border frame, logo, or small header/footer tag)
+    rather than sample body text.
+    """
+    if getattr(shape, "is_placeholder", False):
+        return False
+    if getattr(shape, "has_table", False) or getattr(shape, "has_chart", False):
+        return False
+
+    # Pictures without text (background art, corner logos, decorative illustrations)
+    if hasattr(shape, "image"):
+        return True
+
+    if not getattr(shape, "has_text_frame", False):
+        return True
+
+    txt = (shape.text_frame.text or "").strip()
+    if not txt:
+        return True
+
+    # Keep short header/footer branding labels near the top or bottom edge of the slide
+    top = int(shape.top or 0)
+    height = int(shape.height or 0)
+    near_top = top < int(slide_h_emu * 0.08)
+    near_bottom = (top + height) > int(slide_h_emu * 0.90)
+    if (near_top or near_bottom) and len(txt) <= 32 and "\n" not in txt:
+        return True
+
+    return False
+
+
+def _snapshot_slide_prototype(slide, slide_h_emu: int) -> dict:
+    """
+    Capture a prototype slide's layout reference, custom <p:bg> XML, relationships, and
+    decorative/background shapes (pictures & non-text vector shapes) before slides are cleared.
+    """
+    c_sld = slide._element.find(f"{_NS_P}cSld")
+    bg_el = c_sld.find(f"{_NS_P}bg") if c_sld is not None else None
+    rels_map = {r_id: rel for r_id, rel in slide.part.rels.items()}
+
+    decor_items = []
+    for shape in slide.shapes:
+        if not _is_decorative_or_branding_shape(shape, slide_h_emu):
+            continue
+        try:
+            if hasattr(shape, "image"):
+                decor_items.append({
+                    "kind": "picture",
+                    "blob": shape.image.blob,
+                    "left": int(shape.left or 0),
+                    "top": int(shape.top or 0),
+                    "width": int(shape.width or 0),
+                    "height": int(shape.height or 0),
+                })
+            else:
+                decor_items.append({
+                    "kind": "xml",
+                    "el": copy.deepcopy(shape._element),
+                })
+        except Exception:
+            continue
+
+    return {
+        "layout": slide.slide_layout,
+        "bg_el": copy.deepcopy(bg_el) if bg_el is not None else None,
+        "rels": rels_map,
+        "decor_items": decor_items,
+    }
+
+
+def _capture_template_prototypes(prs: Presentation) -> Dict[str, dict]:
+    """
+    Inspect existing slides in an uploaded .pptx template and capture role prototypes
+    ('cover', 'section', 'content') so their backgrounds, frames, and logos survive slide clearing.
+    """
+    prototypes: Dict[str, dict] = {}
+    slides = list(prs.slides)
+    if not slides:
+        return prototypes
+
+    slide_h_emu = int(prs.slide_height or Inches(7.5))
+    prototypes["cover"] = _snapshot_slide_prototype(slides[0], slide_h_emu)
+
+    if len(slides) == 1:
+        prototypes["content"] = prototypes["cover"]
+        prototypes["section"] = prototypes["cover"]
+        return prototypes
+
+    # Pick a representative content slide (prefer Slide 2 or a slide with multiple shapes)
+    content_slide = slides[1]
+    for s in slides[1:]:
+        lname = (s.slide_layout.name or "").lower()
+        if "section" in lname or "divider" in lname:
+            prototypes.setdefault("section", _snapshot_slide_prototype(s, slide_h_emu))
+        elif "content" in lname or "title" in lname:
+            content_slide = s
+            break
+
+    prototypes["content"] = _snapshot_slide_prototype(content_slide, slide_h_emu)
+    prototypes.setdefault("section", prototypes["cover"])
+    return prototypes
+
+
+def _remap_embed_rids(el, old_rels: dict, target_slide_part) -> None:
+    """Remap any r:embed or r:link attributes in a cloned XML element onto target_slide_part."""
+    for attr_name in (f"{_NS_R}embed", f"{_NS_R}link", f"{_NS_R}id"):
+        for node in el.iter():
+            old_rid = node.get(attr_name)
+            if old_rid and old_rid in old_rels:
+                rel = old_rels[old_rid]
+                try:
+                    if getattr(rel, "is_external", False):
+                        new_rid = target_slide_part.rels.get_or_add_ext_rel(rel.reltype, rel._target)
+                    else:
+                        new_rid = target_slide_part.relate_to(rel.target_part, rel.reltype)
+                    node.set(attr_name, new_rid)
+                except Exception:
+                    pass
+
+
+def _select_layout_for_role(prs: Presentation, role: str, prototypes: Dict[str, dict]):
+    """
+    Choose the best SlideLayout for 'cover', 'section', or 'content'.
+    When a prototype slide exists for that role, use its layout; otherwise match layout names
+    instead of blindly picking the Blank layout (which often hides master graphics).
+    """
+    proto = prototypes.get(role)
+    if proto and proto.get("layout") is not None:
+        return proto["layout"]
+
+    layouts = list(prs.slide_layouts)
+    if not layouts:
+        raise RuntimeError("Presentation has no slide layouts.")
+
+    if role == "cover":
+        for lyt in layouts:
+            n = (lyt.name or "").lower()
+            if "title slide" in n or "cover" in n:
+                return lyt
+        return layouts[0]
+
+    if role == "section":
+        for lyt in layouts:
+            n = (lyt.name or "").lower()
+            if "section" in n or "divider" in n or "header" in n:
+                return lyt
+        return layouts[min(2, len(layouts) - 1)]
+
+    # Content role: prefer a layout that does not hide master shapes (showMasterSp != "0")
+    preferred_keywords = ("title and content", "title only", "content", "custom")
+    for kw in preferred_keywords:
+        for lyt in layouts:
+            n = (lyt.name or "").lower()
+            show_master = lyt._element.get("showMasterSp", "1")
+            if kw in n and show_master != "0":
+                return lyt
+
+    for lyt in layouts:
+        if lyt._element.get("showMasterSp", "1") != "0":
+            return lyt
+
+    return layouts[min(6, len(layouts) - 1)]
+
+
+def _create_slide_with_template(
+    prs: Presentation,
+    role: str,
+    prototypes: Dict[str, dict],
+    is_custom_template: bool,
+):
+    """
+    Add a new slide using the appropriate layout, strip empty layout placeholders,
+    and replay any captured prototype background (<p:bg>) and decorative/branding shapes.
+    """
+    if not is_custom_template:
+        layout_idx = 6 if len(prs.slide_layouts) > 6 else len(prs.slide_layouts) - 1
+        slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
+        for shape in list(slide.placeholders):
+            sp = shape._element
+            sp.getparent().remove(sp)
+        return slide
+
+    layout = _select_layout_for_role(prs, role, prototypes)
+    slide = prs.slides.add_slide(layout)
+
+    # Remove empty placeholder boxes inherited from the layout so they don't overlap our cards
+    for shape in list(slide.placeholders):
+        sp = shape._element
+        sp.getparent().remove(sp)
+
+    proto = prototypes.get(role) or prototypes.get("content")
+    if not proto:
+        return slide
+
+    old_rels = proto.get("rels") or {}
+
+    # 1. Replay slide-level <p:bg> if the prototype slide had a custom background fill/image
+    if proto.get("bg_el") is not None:
+        try:
+            c_sld = slide._element.find(f"{_NS_P}cSld")
+            if c_sld is not None:
+                existing_bg = c_sld.find(f"{_NS_P}bg")
+                if existing_bg is not None:
+                    c_sld.remove(existing_bg)
+                new_bg = copy.deepcopy(proto["bg_el"])
+                _remap_embed_rids(new_bg, old_rels, slide.part)
+                c_sld.insert(0, new_bg)
+        except Exception:
+            pass
+
+    # 2. Replay decorative background images, vector frames, and corner logos
+    for item in proto.get("decor_items") or []:
+        try:
+            if item["kind"] == "picture":
+                slide.shapes.add_picture(
+                    io.BytesIO(item["blob"]),
+                    item["left"],
+                    item["top"],
+                    width=item["width"],
+                    height=item["height"],
+                )
+            elif item["kind"] == "xml":
+                new_el = copy.deepcopy(item["el"])
+                _remap_embed_rids(new_el, old_rels, slide.part)
+                slide.shapes._spTree.append(new_el)
+        except Exception:
+            continue
+
+    return slide
+
+
+def apply_slide_fonts(slide, theme: Dict[str, object]) -> None:
+    """Apply the template's heading and body fonts across all text frames on a rendered slide."""
+    font_heading = theme.get("font_heading")
+    font_body = theme.get("font_body") or font_heading
+    if not font_heading and not font_body:
+        return
+
+    for shape in slide.shapes:
+        if not getattr(shape, "has_text_frame", False):
+            continue
+        for para in shape.text_frame.paragraphs:
+            is_heading = bool(para.font.bold) or (para.font.size is not None and para.font.size >= Pt(16))
+            target_font = font_heading if is_heading else font_body
+            if target_font:
+                para.font.name = target_font
+                for run in para.runs:
+                    run.font.name = target_font
+
 
 def set_solid_background(slide, color: RGBColor) -> None:
     """Apply a solid background color to a slide."""
@@ -1118,17 +1702,7 @@ def clear_existing_slides(prs: Presentation) -> None:
         del prs.slides._sldIdLst[i]
 
 
-def get_blank_or_clean_slide(prs: Presentation):
-    """Select the cleanest available layout from a Presentation and remove leftover empty placeholders."""
-    layout_idx = 6 if len(prs.slide_layouts) > 6 else len(prs.slide_layouts) - 1
-    slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
-    for shape in list(slide.placeholders):
-        sp = shape._element
-        sp.getparent().remove(sp)
-    return slide
-
-
-def draw_card_shape(slide, left: float, top: float, width: float, height: float, theme: Dict[str, RGBColor]):
+def draw_card_shape(slide, left: float, top: float, width: float, height: float, theme: Dict[str, object]):
     """Draw a styled rounded rectangle card container."""
     card = slide.shapes.add_shape(
         MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left), Inches(top), Inches(width), Inches(height)
@@ -1146,20 +1720,19 @@ def draw_header_and_takeaway(
     slide_data: dict,
     slide_idx: int,
     total_slides: int,
-    theme: Dict[str, RGBColor],
+    theme: Dict[str, object],
     apply_bg: bool = True
 ) -> None:
     """Render the top accent bar, Action Title, bottom takeaway banner, and slide number."""
     if apply_bg:
         set_solid_background(slide, theme["bg_content"])
-
-    # Top accent strip
-    top_bar = slide.shapes.add_shape(
-        MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(13.333), Inches(0.12)
-    )
-    top_bar.fill.solid()
-    top_bar.fill.fore_color.rgb = theme["accent"]
-    top_bar.line.fill.background()
+        # Top accent strip (only drawn on built-in themes so custom template top banners aren't covered)
+        top_bar = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(13.333), Inches(0.12)
+        )
+        top_bar.fill.solid()
+        top_bar.fill.fore_color.rgb = theme["accent"]
+        top_bar.line.fill.background()
 
     # Action Title
     title_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.42), Inches(11.7), Inches(1.05))
@@ -1209,7 +1782,7 @@ def draw_header_and_takeaway(
     p_footer.font.color.rgb = theme["accent"]
 
 
-def render_cover_slide(slide, slide_data: dict, theme: Dict[str, RGBColor], apply_bg: bool = True) -> None:
+def render_cover_slide(slide, slide_data: dict, theme: Dict[str, object], apply_bg: bool = True) -> None:
     """Render Layout 1: Cover Slide."""
     if apply_bg:
         set_solid_background(slide, theme["bg_cover"])
@@ -1228,7 +1801,7 @@ def render_cover_slide(slide, slide_data: dict, theme: Dict[str, RGBColor], appl
     p_title.text = slide_data.get("action_title", "Presentation Title")
     p_title.font.size = Pt(42)
     p_title.font.bold = True
-    p_title.font.color.rgb = theme["title_cover"] if apply_bg else theme["title_content"]
+    p_title.font.color.rgb = theme["title_cover"]
 
     subtitle = (slide_data.get("subtitle_or_context") or "").strip()
     if subtitle:
@@ -1238,10 +1811,10 @@ def render_cover_slide(slide, slide_data: dict, theme: Dict[str, RGBColor], appl
         p_sub = tf_sub.paragraphs[0]
         p_sub.text = subtitle
         p_sub.font.size = Pt(20)
-        p_sub.font.color.rgb = theme["subtitle_cover"] if apply_bg else theme["body_content"]
+        p_sub.font.color.rgb = theme["subtitle_cover"]
 
 
-def render_section_divider_slide(slide, slide_data: dict, theme: Dict[str, RGBColor], apply_bg: bool = True) -> None:
+def render_section_divider_slide(slide, slide_data: dict, theme: Dict[str, object], apply_bg: bool = True) -> None:
     """Render Layout 2: Section Divider Slide."""
     if apply_bg:
         set_solid_background(slide, theme["bg_section"])
@@ -1260,7 +1833,7 @@ def render_section_divider_slide(slide, slide_data: dict, theme: Dict[str, RGBCo
     p_title.text = slide_data.get("action_title", "Section Title")
     p_title.font.size = Pt(38)
     p_title.font.bold = True
-    p_title.font.color.rgb = theme["title_cover"] if apply_bg else theme["title_content"]
+    p_title.font.color.rgb = theme["title_cover"]
 
     context = (slide_data.get("subtitle_or_context") or "").strip()
     if context:
@@ -1270,10 +1843,10 @@ def render_section_divider_slide(slide, slide_data: dict, theme: Dict[str, RGBCo
         p_sub = tf_sub.paragraphs[0]
         p_sub.text = context
         p_sub.font.size = Pt(18)
-        p_sub.font.color.rgb = theme["subtitle_cover"] if apply_bg else theme["body_content"]
+        p_sub.font.color.rgb = theme["subtitle_cover"]
 
 
-def render_bullet_cards_slide(slide, slide_data: dict, theme: Dict[str, RGBColor]) -> None:
+def render_bullet_cards_slide(slide, slide_data: dict, theme: Dict[str, object]) -> None:
     """Render Layout 3: Stacked Horizontal Structured Cards."""
     points = (slide_data.get("points") or [])[:4]
     count = max(len(points), 1)
@@ -1317,7 +1890,7 @@ def render_bullet_cards_slide(slide, slide_data: dict, theme: Dict[str, RGBColor
         p_det.font.color.rgb = theme["body_content"]
 
 
-def render_three_cards_slide(slide, slide_data: dict, theme: Dict[str, RGBColor]) -> None:
+def render_three_cards_slide(slide, slide_data: dict, theme: Dict[str, object]) -> None:
     """Render Layout 4: 3 Parallel Vertical Pillar Cards."""
     points = (slide_data.get("points") or [])[:3]
     while len(points) < 3:
@@ -1357,7 +1930,7 @@ def render_three_cards_slide(slide, slide_data: dict, theme: Dict[str, RGBColor]
         p_det.font.color.rgb = theme["body_content"]
 
 
-def render_two_column_slide(slide, slide_data: dict, theme: Dict[str, RGBColor]) -> None:
+def render_two_column_slide(slide, slide_data: dict, theme: Dict[str, object]) -> None:
     """Render Layout 5: Side-by-Side Two-Column Comparison."""
     left_col = slide_data.get("left_column") or {"column_title": "Column A", "items": []}
     right_col = slide_data.get("right_column") or {"column_title": "Column B", "items": []}
@@ -1407,7 +1980,7 @@ def render_two_column_slide(slide, slide_data: dict, theme: Dict[str, RGBColor])
             p_det.space_after = Pt(10)
 
 
-def render_kpi_metrics_slide(slide, slide_data: dict, theme: Dict[str, RGBColor]) -> None:
+def render_kpi_metrics_slide(slide, slide_data: dict, theme: Dict[str, object]) -> None:
     """Render Layout 6: Hero KPI Metric Cards."""
     kpis = (slide_data.get("kpis") or [])[:4]
     count = max(len(kpis), 1)
@@ -1451,7 +2024,7 @@ def render_kpi_metrics_slide(slide, slide_data: dict, theme: Dict[str, RGBColor]
         p_ctx.font.color.rgb = theme["body_content"]
 
 
-def render_chart_slide(slide, slide_data: dict, theme: Dict[str, RGBColor]) -> None:
+def render_chart_slide(slide, slide_data: dict, theme: Dict[str, object]) -> None:
     """Render Layout 7: Native Editable PowerPoint Chart (Left) + Key Insights (Right)."""
     chart_spec = slide_data.get("chart") or {}
     categories = chart_spec.get("categories") or ["A", "B", "C"]
@@ -1516,7 +2089,7 @@ def render_chart_slide(slide, slide_data: dict, theme: Dict[str, RGBColor]) -> N
 def render_image_split_slide(
     slide,
     slide_data: dict,
-    theme: Dict[str, RGBColor],
+    theme: Dict[str, object],
     img_bytes: Optional[bytes] = None
 ) -> None:
     """Render Layout 8: Visual Image + Caption on one side, Structured Points on the other."""
@@ -1608,30 +2181,46 @@ def build_presentation_pptx(
     unsplash_access_key: str,
     extracted_report_images: List[Dict[str, bytes]],
     custom_template_bytes: Optional[bytes] = None,
+    use_template_colors: bool = True,
 ) -> bytes:
     """
     Assemble the complete .pptx presentation across all 8 visual layouts.
-    Supports both Built-in Color Themes and Custom Uploaded .pptx Templates.
+    Supports both Built-in Color Themes and Custom Uploaded .pptx Templates (inheriting
+    Slide Masters, role-specific layouts, prototype slide artwork/logos, theme colors, and fonts).
     """
-    theme = BUILTIN_THEMES.get(theme_name, BUILTIN_THEMES["Corporate Blue"])
+    prototypes: Dict[str, dict] = {}
+    is_custom_template = bool(custom_template_bytes)
 
-    if custom_template_bytes:
+    if is_custom_template:
         prs = Presentation(io.BytesIO(custom_template_bytes))
+        _scale_template_to_widescreen(prs, 13.333, 7.5)
+        theme = extract_template_style(
+            prs,
+            fallback_theme_name=theme_name,
+            use_template_colors=use_template_colors,
+        )
+        prototypes = _capture_template_prototypes(prs)
         clear_existing_slides(prs)
-        apply_solid_bg = False  # Preserve custom template's master background graphics
+        apply_solid_bg = False  # Preserve custom template's master, layout, and prototype backgrounds
     else:
         prs = Presentation()
+        prs.slide_width = Inches(13.333)
+        prs.slide_height = Inches(7.5)
+        theme = dict(BUILTIN_THEMES.get(theme_name, BUILTIN_THEMES["Corporate Blue"]))
         apply_solid_bg = True
-
-    # Standardize canvas to 16:9 widescreen (13.333 x 7.5 inches)
-    prs.slide_width = Inches(13.333)
-    prs.slide_height = Inches(7.5)
 
     total_slides = len(slides_data)
 
     for idx, slide_data in enumerate(slides_data):
         layout = slide_data.get("layout_type", LayoutType.BULLET_CARDS.value)
-        slide = get_blank_or_clean_slide(prs)
+        if layout == LayoutType.COVER.value:
+            role = "cover"
+        elif layout == LayoutType.SECTION_DIVIDER.value:
+            role = "section"
+        else:
+            role = "content"
+
+        slide = _create_slide_with_template(prs, role, prototypes, is_custom_template)
 
         if layout == LayoutType.COVER.value:
             render_cover_slide(slide, slide_data, theme, apply_bg=apply_solid_bg)
@@ -1666,6 +2255,8 @@ def build_presentation_pptx(
 
             else:
                 render_bullet_cards_slide(slide, slide_data, theme)
+
+        apply_slide_fonts(slide, theme)
 
     output = io.BytesIO()
     prs.save(output)
@@ -1869,6 +2460,8 @@ def init_state() -> None:
             "unsplash_key": "",
             "use_imagen": False,
         }
+    ss.setdefault("custom_tpl_bytes", None)
+    ss.setdefault("custom_tpl_name", None)
     if "chats" not in ss:
         ss.chats = {}
         ss.chat_order = []
@@ -2264,15 +2857,27 @@ def render_export_block(chat: dict) -> None:
     s = ss.settings
     cid = chat["id"]
 
+    use_custom_tpl = ss.get("opt_tpl_mode") == "Custom .pptx template"
+    tpl_bytes = ss.get("custom_tpl_bytes")
+    tpl_name = ss.get("custom_tpl_name")
+    use_tpl_colors = ss.get("opt_tpl_color_mode", "Auto-extract colors from .pptx") == "Auto-extract colors from .pptx"
+
     st.markdown("**Export**")
-    st.caption(
-        "Template and color palette are chosen in the 🎨 button of the message box. "
-        "Send a short message below (e.g. “make it 6 slides with more charts”) to regenerate from the same source."
-    )
+    if use_custom_tpl and tpl_bytes:
+        info = inspect_template_summary(tpl_bytes)
+        st.caption(
+            f"🎨 Using custom template **`{tpl_name}`** (font: `{info['font']}`, accent: `{info['accent']}`, "
+            f"color mode: {'template colors' if use_tpl_colors else ss.get('opt_theme', 'Corporate Blue')}). "
+            "Send a short message below to revise the outline."
+        )
+    else:
+        st.caption(
+            f"🎨 Styling: **{ss.get('opt_theme', list(BUILTIN_THEMES.keys())[0])}** (change in the 🎨 button below). "
+            "Send a short message below (e.g. “make it 6 slides with more charts”) to regenerate from the same source."
+        )
+
     if st.button("🚀 Render presentation (.pptx)", type="primary", use_container_width=True, key=f"render_{cid}"):
-        use_custom_tpl = ss.get("opt_tpl_mode") == "Custom .pptx template"
-        tpl_file = ss.get("opt_tpl_file")
-        if use_custom_tpl and tpl_file is None:
+        if use_custom_tpl and not tpl_bytes:
             st.error("Upload a .pptx template in the 🎨 menu, or switch to a built-in theme.")
         else:
             with st.spinner("Rendering layouts, native charts and visuals into PowerPoint..."):
@@ -2284,7 +2889,8 @@ def render_export_block(chat: dict) -> None:
                         use_imagen=s["use_imagen"],
                         unsplash_access_key=s["unsplash_key"],
                         extracted_report_images=chat["report_images"],
-                        custom_template_bytes=tpl_file.getvalue() if (use_custom_tpl and tpl_file) else None,
+                        custom_template_bytes=tpl_bytes if use_custom_tpl else None,
+                        use_template_colors=use_tpl_colors,
                     )
                     st.success("Presentation rendered! Download it below.")
                 except Exception as e:  # noqa: BLE001
@@ -2434,7 +3040,13 @@ def render_composer(chat: dict) -> None:
     model_state = ss.get(f"opt_model_{prov_name}")
     if model_state == "Custom Model ID...":
         model_state = ss.get(f"opt_custom_model_{prov_name}")
-    tpl_label = "🎨 Custom .pptx" if ss.get("opt_tpl_mode") == "Custom .pptx template" else f"🎨 {_short(ss.get('opt_theme', 'Theme'), 14)}"
+    is_custom_tpl = ss.get("opt_tpl_mode") == "Custom .pptx template"
+    if is_custom_tpl and ss.get("custom_tpl_name"):
+        tpl_label = f"🎨 {_short(ss['custom_tpl_name'], 13)}"
+    elif is_custom_tpl:
+        tpl_label = "🎨 Custom .pptx"
+    else:
+        tpl_label = f"🎨 {_short(ss.get('opt_theme', 'Theme'), 14)}"
 
     with st.container(key="composer_dock"):
         with st.container(key="composer"):
@@ -2465,14 +3077,39 @@ def render_composer(chat: dict) -> None:
 
             with c_tpl.popover(tpl_label, use_container_width=True):
                 st.radio("Styling", ["Built-in 16:9 theme", "Custom .pptx template"], key="opt_tpl_mode")
-                st.selectbox("Color palette", list(BUILTIN_THEMES.keys()), key="opt_theme")
                 if ss.get("opt_tpl_mode") == "Custom .pptx template":
-                    st.file_uploader(
+                    tpl_upload = st.file_uploader(
                         "Upload .pptx template",
                         type=["pptx"],
                         key="opt_tpl_file",
-                        help="Keeps your Slide Master background; the palette is used for cards and charts.",
+                        help="Inherits Slide Master, role layouts, background art, logos, theme colors, and fonts.",
                     )
+                    if tpl_upload is not None:
+                        new_bytes = tpl_upload.getvalue()
+                        if ss.get("custom_tpl_bytes") != new_bytes or ss.get("custom_tpl_name") != tpl_upload.name:
+                            ss["custom_tpl_bytes"] = new_bytes
+                            ss["custom_tpl_name"] = tpl_upload.name
+                            st.rerun()
+
+                    if ss.get("custom_tpl_bytes"):
+                        info = inspect_template_summary(ss["custom_tpl_bytes"])
+                        st.caption(
+                            f"✅ Loaded `{ss['custom_tpl_name']}` · Font: `{info['font']}` · "
+                            f"Accent: `{info['accent']}` · BG: `{info['bg']}`"
+                        )
+                        if st.button("🗑️ Remove template", key="clear_tpl_btn", use_container_width=True):
+                            ss["custom_tpl_bytes"] = None
+                            ss["custom_tpl_name"] = None
+                            st.rerun()
+
+                    st.radio(
+                        "Template card & accent colors",
+                        ["Auto-extract colors from .pptx", "Use fallback palette below"],
+                        key="opt_tpl_color_mode",
+                    )
+                    st.selectbox("Fallback color palette", list(BUILTIN_THEMES.keys()), key="opt_theme")
+                else:
+                    st.selectbox("Color palette", list(BUILTIN_THEMES.keys()), key="opt_theme")
 
             tone_label = c_tone.selectbox(
                 "Tone", list(TONE_OPTIONS.keys()), key="opt_tone", label_visibility="collapsed"

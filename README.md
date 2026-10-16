@@ -1,23 +1,33 @@
 # 📊 ChatPPT V2 — Smart Visual Presentation Generator
 
-**ChatPPT V2** is an AI-powered presentation engineering tool built with **Python**, **Streamlit**, **Google Gemini (`google-genai`)**, and **`python-pptx`**. Instead of generating monotonous bullet-point slides, ChatPPT acts as a consulting-style presentation architect—automatically routing raw reports into **8 distinct visual slide layouts**, generating **native editable PowerPoint charts**, extracting **embedded figures from PDFs/Word documents**, and synthesizing **AI illustrations**.
+**ChatPPT V2** is an AI-powered presentation engineering web app built with **Python**, **Streamlit**, **Pydantic v2**, and **`python-pptx`**. Instead of generating monotonous bullet-point slides, ChatPPT acts as a consulting-style presentation architect—featuring a **Claude-style conversational UI**, **multi-provider LLM support** with **live model discovery**, **8 distinct visual slide layouts**, **native editable PowerPoint charts**, **Smart Hybrid image routing**, and **deep `.pptx` custom template inheritance**.
 
 ---
 
 ## ✨ Key Features
 
-* **Multi-Source Document Ingestion:** Upload `.pdf`, `.docx`, `.txt`, or `.md` reports, or paste raw notes directly.
-* **Automatic Embedded Image Extraction:** Automatically extracts existing diagrams, charts, and photos embedded inside uploaded `.pdf` and `.docx` files so you can reuse them on any slide.
-* **Smart Layout Routing (8 Archetypes):** Powered by Gemini 2.5 Flash Structured Outputs (`Pydantic` schema validation) to prevent consecutive repetitive layouts and match visual form to content logic.
-* **Consulting-Grade Copywriting:** Enforces conclusion-first **Action Titles**, scannable **Bold Heading + Concise Detail** anchor cards, and a **Bottom Takeaway ("So What?") Banner** on content slides.
-* **Native Editable PowerPoint Charts:** Extracts real numerical series from your report and renders native, editable PowerPoint Column, Line, and Pie charts (`XL_CHART_TYPE`).
-* **3-Tier Image & Visual Engine:**
-  1. **AI Concept Illustration:** Generates 4:3 presentation graphics via **Google Imagen 3** (`imagen-3.0-generate-002`) with an automatic zero-key fallback to **Pollinations AI**.
-  2. **Report Image Reuse:** Assign extracted PDF/DOCX figures to specific slides from a dropdown.
-  3. **Custom Upload / Blueprint Placeholder:** Upload custom images per slide or render clean wireframe placeholders for offline/confidential workflows.
-* **Aspect-Ratio Safe Image Fitting:** Uses `Pillow (PIL)` to calculate bounding boxes, convert `WEBP`/`RGBA` formats to `RGB`, and center images without stretching or distortion.
-* **2-Step Interactive Editor:** Review and modify every slide's layout type, titles, structured points, chart numbers, and image sources in the browser before rendering the final `.pptx`.
-* **Built-in 16:9 Themes & Custom `.pptx` Template Support:** Choose from 4 widescreen color palettes (*Corporate Blue*, *Modern Dark*, *Minimalist Light*, *Emerald Forest*) or upload your own `.pptx` template to inherit its Slide Master background.
+* **Claude-Style Conversational Interface:**
+  * Manage multiple presentation sessions in the left sidebar (`＋ New chat`, switch, or delete chats).
+  * Sticky bottom composer bar with popovers for file attachment (`📎`), theme/template styling (`🎨`), tone selection, provider/model picker (`🤖`), and slide count/language (`⚙`).
+  * **Conversational Revisions:** Send short follow-up prompts (e.g., *"make it 6 slides and add more charts"*) to regenerate and refine the deck outline from the same source material.
+* **Multi-Provider BYOK (Bring Your Own Key) Architecture:**
+  * Supports **Google Gemini** (native `google-genai` SDK), **Groq**, **OpenAI**, **DeepSeek**, **OpenRouter**, and any **Custom OpenAI-Compatible API** (SiliconFlow, Together AI, Ollama, vLLM).
+  * **Live Model Discovery:** Automatically queries the provider's `/models` endpoint (and filters out non-chat models like Whisper/TTS/Embeddings) with a 10-minute cache and manual refresh button.
+  * **Automatic JSON Repair & Slide-Count Verification:** Strips `<think>` reasoning blocks, repairs truncated or stray-brace JSON (`failed_generation`), and automatically retries or trims if a model misses the target slide count.
+  * **In-Memory Session Privacy:** All API keys live strictly in the Settings dialog (`⚙️ Settings`) inside per-session server memory and are never written to disk.
+* **Multi-Source Document & Embedded Figure Ingestion:**
+  * Upload `.pdf`, `.docx`, `.txt`, or `.md` reports, or paste raw notes directly.
+  * Automatically extracts embedded diagrams, charts, and images from `.pdf` and `.docx` files so you can assign them to any slide.
+* **Consulting-Grade Copywriting & 8 Visual Layouts:**
+  * Enforces conclusion-first **Action Titles**, scannable **Bold Heading + Concise Detail** anchor cards, and a **Bottom Takeaway ("So What?") Banner** on content slides.
+* **Native Editable PowerPoint Charts:**
+  * Extracts real numerical series from your report and renders native, editable PowerPoint Column, Line, and Pie charts (`XL_CHART_TYPE`).
+* **Smart Hybrid Image Engine:**
+  * Automatically routes `image_split` slides between **Unsplash Stock Photography** (`stock_photo` for real-world scenes, teams, hardware, cities) and **AI Concept Illustrations** (`ai_illustration` via **Google Imagen 3** or **Pollinations AI** fallback), plus **Extracted Report Figures**, **Custom Image Uploads**, and **Wireframe Placeholders**.
+  * Uses `Pillow (PIL)` for aspect-ratio-safe bounding box fitting and automatic `WEBP`/`RGBA` to `RGB` conversion.
+* **Built-in 16:9 Themes & Smart Custom `.pptx` Template Inheritance:**
+  * Choose from 4 built-in widescreen palettes (*Corporate Blue*, *Modern Dark*, *Minimalist Light*, *Emerald Forest*) or upload your own `.pptx` template.
+  * Custom `.pptx` mode automatically scales non-16:9 canvases (e.g., `10 × 5.625 in` Canva/Google Slides exports) to `13.333 × 7.5 in`, preserves Slide Master/layout backgrounds, replays decorative slide artwork/frames/corner logos, and extracts the template's `theme1.xml` / slide color scheme and fonts.
 
 ---
 
@@ -38,10 +48,10 @@
 
 ## 🛠️ Tech Stack
 
-* **Frontend & Workflow UI:** [Streamlit](https://streamlit.io/)
-* **LLM & Structured Routing:** [Google GenAI SDK](https://pypi.org/project/google-genai/) (`gemini-2.5-flash` & `imagen-3.0-generate-002`)
-* **Schema Validation:** [Pydantic v2](https://docs.pydantic.dev/)
-* **Slide Rendering Engine:** [python-pptx](https://python-pptx.readthedocs.io/)
+* **Frontend & Conversational UI:** [Streamlit](https://streamlit.io/) (`>=1.46.0`, theme-neutral CSS for light & dark mode)
+* **LLM Providers:** [Google GenAI SDK](https://pypi.org/project/google-genai/) + zero-dependency OpenAI-compatible REST client (`urllib.request`) for Groq, OpenAI, DeepSeek, OpenRouter, and custom endpoints
+* **Schema Validation & Structured Output:** [Pydantic v2](https://docs.pydantic.dev/)
+* **Slide & Chart Rendering Engine:** [python-pptx](https://python-pptx.readthedocs.io/)
 * **Document & Image Processing:** `pypdf`, `python-docx`, `Pillow (PIL)`
 
 ---
@@ -50,57 +60,10 @@
 
 ### 1. Prerequisites
 * **Python 3.9+** installed on your system.
-* A **Google Gemini API Key** (get one from [Google AI Studio](https://aistudio.google.com/)).
+* At least one LLM API Key (**Google Gemini**, **Groq**, **OpenAI**, **DeepSeek**, or **OpenRouter**).
 
 ### 2. Install Dependencies
 Clone or download this repository, navigate to the project folder, and install the required packages:
 
 ```bash
 pip install -r requirements.txt
-```
-
-### 3. Run the Application
-Launch the Streamlit web server:
-
-```bash
-streamlit run app.py
-```
-
-The app will automatically open in your default browser at `http://localhost:8501`.
-
----
-
-## 📖 Usage Guide (3-Step Workflow)
-
-### Step 1: Configure & Provide Source Material
-1. Open the left sidebar and enter your **Gemini API Key**.
-2. Set your desired **Number of Slides** (4–20), **Presentation Tone**, and **Output Language**.
-3. Choose between a **Built-in 16:9 Color Theme** or **Upload Custom `.pptx` Template**.
-4. Upload your report (`.pdf`, `.docx`, `.txt`, `.md`) and/or paste text into the main input area, then click **Analyze Report & Generate Smart Visual Outline**.
-
-### Step 2: Review & Customize the Outline
-Expand any slide card in the interactive editor to fine-tune its content or switch its **Slide Layout Type** dynamically:
-* **Structured Points (`bullet_cards`, `three_cards`, `chart_slide`, `image_split`):** Edit one point per line using the `Heading :: Detail` format:
-  ```text
-  Automated Caching :: Reduced peak database read latency by 62% across Q3 traffic loads.
-  ```
-* **Hero KPIs (`kpi_metrics`):** Edit one metric per line using the `Value | Label | Context` format:
-  ```text
-  +62% | Throughput Gain | Measured across 10k concurrent requests
-  ```
-* **Native Charts (`chart_slide`):** Switch between `bar`, `line`, and `pie` charts, and edit comma-separated categories and numerical values.
-* **Visuals (`image_split`):** Choose between **AI Generated Illustration**, **Use Image from Report** (if your PDF/DOCX contained embedded figures), **Upload Custom Image**, or **Visual Placeholder Only**.
-
-### Step 3: Render & Download
-Click **Render Complete Presentation (.pptx)** to build the slide deck and download `ChatPPT_V2_Presentation.pptx`. All shapes, text boxes, and charts remain 100% natively editable inside Microsoft PowerPoint, Keynote, or Google Slides.
-
----
-
-## 📁 Project Structure
-
-```text
-ChatPPT/
-├── app.py              # Main Streamlit application, Gemini router, and python-pptx rendering engine
-├── requirements.txt    # Python package dependencies
-└── README.md           # Project documentation
-```
