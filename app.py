@@ -1,7 +1,9 @@
 import io
 import json
+import re
 import urllib.parse
 import urllib.request
+import urllib.error
 from enum import Enum
 from typing import List, Dict, Optional
 
@@ -23,7 +25,7 @@ from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 
 
 # =====================================================================
-# 1. Enumerations & Pydantic Schemas for Gemini Structured Output
+# 1. Enumerations & Pydantic Schemas for Structured Output
 # =====================================================================
 
 class LayoutType(str, Enum):
@@ -172,8 +174,75 @@ class PresentationOutline(BaseModel):
 
 
 # =====================================================================
-# 2. Built-in 16:9 Color Themes
+# 2. Multi-Provider LLM Presets & Built-in 16:9 Color Themes
 # =====================================================================
+
+LLM_PROVIDERS: Dict[str, Dict] = {
+    "Google Gemini": {
+        "base_url": None,  # Handled natively via google-genai SDK
+        "models": [
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash",
+            "Custom Model ID...",
+        ],
+        "key_label": "Google Gemini API Key",
+        "key_help": "Enter your Google AI Studio / Vertex Gemini API Key.",
+    },
+    "Groq (Fast & Free Tier)": {
+        "base_url": "https://api.groq.com/openai/v1/chat/completions",
+        "models": [
+            "llama-3.3-70b-versatile",
+            "deepseek-r1-distill-llama-70b",
+            "qwen-qwq-32b",
+            "llama-3.1-8b-instant",
+            "Custom Model ID...",
+        ],
+        "key_label": "Groq API Key (gsk_...)",
+        "key_help": "Get a high-speed key from console.groq.com.",
+    },
+    "OpenAI (Paid)": {
+        "base_url": "https://api.openai.com/v1/chat/completions",
+        "models": [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "Custom Model ID...",
+        ],
+        "key_label": "OpenAI API Key (sk-...)",
+        "key_help": "Enter your OpenAI Platform API Key.",
+    },
+    "DeepSeek (Paid)": {
+        "base_url": "https://api.deepseek.com/chat/completions",
+        "models": [
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "Custom Model ID...",
+        ],
+        "key_label": "DeepSeek API Key",
+        "key_help": "Enter your DeepSeek Platform API Key.",
+    },
+    "OpenRouter (All-in-One)": {
+        "base_url": "https://openrouter.ai/api/v1/chat/completions",
+        "models": [
+            "anthropic/claude-3.7-sonnet",
+            "google/gemini-2.5-pro",
+            "meta-llama/llama-3.3-70b-instruct",
+            "deepseek/deepseek-chat",
+            "Custom Model ID...",
+        ],
+        "key_label": "OpenRouter API Key (sk-or-...)",
+        "key_help": "Access Claude, Gemini, Llama, and DeepSeek with one OpenRouter key.",
+    },
+    "Custom OpenAI-Compatible API": {
+        "base_url": "https://api.openai.com/v1/chat/completions",
+        "models": ["Custom Model ID..."],
+        "key_label": "Custom Provider API Key",
+        "key_help": "Works with SiliconFlow, Together AI, Fireworks, vLLM, or Ollama.",
+    },
+}
 
 BUILTIN_THEMES: Dict[str, Dict[str, RGBColor]] = {
     "Corporate Blue": {
@@ -302,7 +371,7 @@ def extract_images_from_report(uploaded_file) -> List[Dict[str, bytes]]:
 
 
 # =====================================================================
-# 4. Gemini Outline Router & Sanitizer
+# 4. Multi-Provider LLM Outline Router & Sanitizer
 # =====================================================================
 
 SYSTEM_INSTRUCTION = """
@@ -339,6 +408,83 @@ Transform the user's source report into a visually diverse, executive-ready slid
    - Break every point into a short bold `heading` (3-6 words) and a concise `detail` (12-25 words).
    - Include a `bottom_takeaway` on all content slides summarizing the strategic implication ("So What?").
 """
+
+
+def extract_clean_json_str(raw_text: str) -> str:
+    """
+    Strip <think>...</think> reasoning blocks and Markdown code fences from LLM responses
+    so Pydantic can reliably parse JSON across DeepSeek, Qwen, Llama, and OpenAI models.
+    """
+    cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+    fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", cleaned, flags=re.DOTALL)
+    if fence_match:
+        return fence_match.group(1).strip()
+
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        return cleaned[first_brace:last_brace + 1]
+    return cleaned
+
+
+def call_openai_compatible_json(
+    base_url: str,
+    api_key: str,
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    """
+    Zero-dependency REST client for OpenAI-compatible chat completion endpoints
+    (Groq, OpenAI, DeepSeek, OpenRouter, SiliconFlow, etc.).
+    Automatically retries without response_format if a reasoning model rejects json_object mode.
+    """
+    schema_json = json.dumps(PresentationOutline.model_json_schema(), ensure_ascii=False)
+    full_system_prompt = (
+        f"{system_prompt}\n\n"
+        "### OUTPUT FORMAT REQUIREMENT:\n"
+        "You MUST respond ONLY with a valid JSON object that strictly conforms to the following JSON Schema. "
+        "Do NOT wrap the JSON in markdown explanations or add extra text outside the JSON object.\n"
+        f"JSON Schema:\n{schema_json}"
+    )
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key.strip()}",
+        "HTTP-Referer": "https://chatppt-v2.streamlit.app",
+        "X-Title": "ChatPPT V2",
+        "User-Agent": "ChatPPT-V2/2.0",
+    }
+
+    for use_json_mode in (True, False):
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": full_system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.3,
+        }
+        if use_json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
+        req = urllib.request.Request(
+            base_url.strip(),
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+                content = resp_data["choices"][0]["message"]["content"]
+                return extract_clean_json_str(content)
+        except urllib.error.HTTPError as http_err:
+            err_body = http_err.read().decode("utf-8", errors="ignore")
+            # If the specific model doesn't support response_format: json_object, retry once without it
+            if use_json_mode and http_err.code == 400 and "response_format" in err_body.lower():
+                continue
+            raise RuntimeError(f"Provider API HTTP {http_err.code}: {err_body}") from http_err
 
 
 def sanitize_outline_dict(outline: PresentationOutline) -> List[dict]:
@@ -429,16 +575,20 @@ def sanitize_outline_dict(outline: PresentationOutline) -> List[dict]:
 
 
 def generate_smart_outline(
+    provider: str,
     api_key: str,
     source_text: str,
     num_slides: int,
     tone: str,
     language: str,
-    model_name: str = "gemini-3.8-flash"
+    model_name: str,
+    custom_base_url: Optional[str] = None,
 ) -> List[dict]:
-    """Call Gemini with Structured Outputs to generate a multi-layout presentation outline."""
-    client = genai.Client(api_key=api_key)
-
+    """
+    Multi-Provider Outline Generator:
+    Routes request to either Google Gemini SDK or any OpenAI-Compatible endpoint (Groq, OpenAI, DeepSeek, etc.)
+    and validates the returned JSON against PresentationOutline.
+    """
     user_prompt = f"""
     Create a {num_slides}-slide presentation outline based on the source document below.
 
@@ -454,18 +604,30 @@ def generate_smart_outline(
     \"\"\"
     """
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=user_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            response_mime_type="application/json",
-            response_schema=PresentationOutline,
-            temperature=0.3,
-        ),
-    )
+    if provider == "Google Gemini":
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+                response_mime_type="application/json",
+                response_schema=PresentationOutline,
+                temperature=0.3,
+            ),
+        )
+        raw_json = extract_clean_json_str(response.text)
+    else:
+        endpoint_url = custom_base_url or LLM_PROVIDERS[provider]["base_url"]
+        raw_json = call_openai_compatible_json(
+            base_url=endpoint_url,
+            api_key=api_key,
+            model_name=model_name,
+            system_prompt=SYSTEM_INSTRUCTION,
+            user_prompt=user_prompt,
+        )
 
-    parsed_outline = PresentationOutline.model_validate_json(response.text)
+    parsed_outline = PresentationOutline.model_validate_json(raw_json)
     return sanitize_outline_dict(parsed_outline)
 
 
@@ -511,21 +673,22 @@ def fetch_unsplash_image_bytes(search_keywords: str, unsplash_access_key: Option
 
 def generate_ai_image_bytes(
     visual_prompt: str,
-    api_key: Optional[str] = None,
+    gemini_api_key: Optional[str] = None,
     use_imagen: bool = False
 ) -> Optional[bytes]:
     """
     Generate a 4:3 conceptual illustration for a slide.
-    Tries Google Imagen 3 first (if enabled), and falls back to Pollinations AI stream.
+    Tries Google Imagen 3 first (if enabled and a Gemini API key is available),
+    and falls back to Pollinations AI stream.
     """
     enhanced_prompt = (
         f"{visual_prompt}, clean modern corporate presentation illustration, "
         "minimalist high-contrast aesthetic, no text, no watermarks"
     )
 
-    if use_imagen and api_key:
+    if use_imagen and gemini_api_key:
         try:
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(api_key=gemini_api_key)
             result = client.models.generate_images(
                 model="imagen-3.0-generate-002",
                 prompt=enhanced_prompt,
@@ -552,7 +715,7 @@ def generate_ai_image_bytes(
 
 def resolve_slide_image_bytes(
     slide_data: dict,
-    api_key: str,
+    gemini_api_key: Optional[str],
     use_imagen: bool,
     unsplash_access_key: str,
     extracted_report_images: List[Dict[str, bytes]],
@@ -586,20 +749,20 @@ def resolve_slide_image_bytes(
         img_bytes = fetch_unsplash_image_bytes(search_keywords, unsplash_access_key)
         if img_bytes:
             return img_bytes
-        return generate_ai_image_bytes(visual_prompt, api_key=api_key, use_imagen=use_imagen)
+        return generate_ai_image_bytes(visual_prompt, gemini_api_key=gemini_api_key, use_imagen=use_imagen)
 
     # 5. Explicit AI Generated Illustration
     if src_mode == "AI Generated Illustration":
-        return generate_ai_image_bytes(visual_prompt, api_key=api_key, use_imagen=use_imagen)
+        return generate_ai_image_bytes(visual_prompt, gemini_api_key=gemini_api_key, use_imagen=use_imagen)
 
-    # 6. Smart Hybrid (Auto) — Follows Gemini's per-slide `preferred_style` with cross-fallback
+    # 6. Smart Hybrid (Auto) — Follows LLM's per-slide `preferred_style` with cross-fallback
     if preferred_style == VisualStyle.STOCK_PHOTO.value and unsplash_access_key:
         img_bytes = fetch_unsplash_image_bytes(search_keywords, unsplash_access_key)
         if img_bytes:
             return img_bytes
-        return generate_ai_image_bytes(visual_prompt, api_key=api_key, use_imagen=use_imagen)
+        return generate_ai_image_bytes(visual_prompt, gemini_api_key=gemini_api_key, use_imagen=use_imagen)
     else:
-        img_bytes = generate_ai_image_bytes(visual_prompt, api_key=api_key, use_imagen=use_imagen)
+        img_bytes = generate_ai_image_bytes(visual_prompt, gemini_api_key=gemini_api_key, use_imagen=use_imagen)
         if img_bytes:
             return img_bytes
         return fetch_unsplash_image_bytes(search_keywords, unsplash_access_key)
@@ -1158,7 +1321,7 @@ def render_image_split_slide(
 def build_presentation_pptx(
     slides_data: List[dict],
     theme_name: str,
-    api_key: str,
+    gemini_api_key: Optional[str],
     use_imagen: bool,
     unsplash_access_key: str,
     extracted_report_images: List[Dict[str, bytes]],
@@ -1212,7 +1375,7 @@ def build_presentation_pptx(
             elif layout == LayoutType.IMAGE_SPLIT.value:
                 img_bytes = resolve_slide_image_bytes(
                     slide_data=slide_data,
-                    api_key=api_key,
+                    gemini_api_key=gemini_api_key,
                     use_imagen=use_imagen,
                     unsplash_access_key=unsplash_access_key,
                     extracted_report_images=extracted_report_images,
@@ -1299,22 +1462,38 @@ def main():
     # --- Sidebar Configuration ---
     with st.sidebar:
         st.title("⚙️ ChatPPT V2 Settings")
-        api_key = st.text_input("Gemini API Key", type="password", help="Enter your Google Gemini API key.")
+
+        st.subheader("0. AI Provider & Model")
+        selected_provider = st.selectbox(
+            "LLM Provider",
+            list(LLM_PROVIDERS.keys()),
+            index=0,
+            help="Switch between Google Gemini, Groq (Fast & Free tier), OpenAI, DeepSeek, OpenRouter, or any Custom endpoint.",
+        )
+        provider_cfg = LLM_PROVIDERS[selected_provider]
+
+        api_key = st.text_input(
+            provider_cfg["key_label"],
+            type="password",
+            help=provider_cfg["key_help"],
+        )
+
+        custom_base_url = None
+        if selected_provider == "Custom OpenAI-Compatible API":
+            custom_base_url = st.text_input(
+                "Custom Endpoint Base URL",
+                value=provider_cfg["base_url"],
+                help="Full chat completions URL, e.g., https://api.siliconflow.cn/v1/chat/completions",
+            ).strip()
 
         model_choice = st.selectbox(
-            "Gemini Model",
-            [
-                "gemini-3.8-flash",
-                "gemini-3.5-flash",
-                "gemini-3.1-flash-lite",
-                "gemini-2.5-flash",
-                "Custom Model ID...",
-            ],
+            "Model Name",
+            provider_cfg["models"],
             index=0,
-            help="Select the active Gemini model for your API key.",
         )
         if model_choice == "Custom Model ID...":
-            active_model = st.text_input("Enter Custom Model ID", value="gemini-3.8-flash").strip()
+            default_custom = "gemini-3.8-flash" if selected_provider == "Google Gemini" else "gpt-4o-mini"
+            active_model = st.text_input("Enter Custom Model ID", value=default_custom).strip()
         else:
             active_model = model_choice
 
@@ -1356,16 +1535,25 @@ def main():
             help="Enter your free Unsplash Access Key for real stock photography. If left blank, Smart Hybrid Mode automatically falls back to AI generation.",
         )
         use_imagen = st.checkbox(
-            "Use Google Imagen 3 (via Gemini Key)",
+            "Use Google Imagen 3 (Optional)",
             value=False,
             help="When enabled, tries Google Imagen 3 first for AI illustrations and falls back to Pollinations AI if unavailable.",
         )
 
+        # Determine which key to pass to Imagen 3 if enabled
+        gemini_img_key = api_key if selected_provider == "Google Gemini" else None
+        if use_imagen and selected_provider != "Google Gemini":
+            gemini_img_key = st.text_input(
+                "Gemini API Key (for Imagen 3)",
+                type="password",
+                help="Provide a Google Gemini API Key specifically for Imagen 3 image generation.",
+            )
+
     # --- Main Content Area ---
     st.title("📊 ChatPPT V2 — Smart Visual Slide Generator")
     st.caption(
-        "Automatically routes your report into 8 consulting-grade layouts with Smart Hybrid Visuals "
-        "(Unsplash Real Stock Photography + Gemini AI Concept Illustrations + Extracted Report Figures)."
+        "Multi-Provider AI Slide Generator (Gemini / Groq / OpenAI / DeepSeek / OpenRouter) with 8 Consulting Layouts & "
+        "Smart Hybrid Visuals (Unsplash Real Stock Photography + AI Concept Illustrations + Extracted Report Figures)."
     )
 
     # Step 1: Upload or Paste Source Material
@@ -1387,7 +1575,7 @@ def main():
 
     if st.button("✨ Step 1: Analyze Report & Generate Smart Visual Outline", type="primary", use_container_width=True):
         if not api_key:
-            st.error("Please enter your Gemini API Key in the sidebar first.")
+            st.error(f"Please enter your {provider_cfg['key_label']} in the sidebar first.")
         else:
             file_text = extract_text_from_uploaded_file(uploaded_report)
             combined_text = "\n\n".join(filter(None, [file_text.strip(), pasted_text.strip()]))
@@ -1395,21 +1583,24 @@ def main():
             if not combined_text:
                 st.warning("Please upload a document or paste text first.")
             else:
-                with st.spinner(f"Extracting embedded images & designing multi-layout slide deck with {active_model}..."):
+                with st.spinner(f"Extracting embedded images & designing multi-layout slide deck via {selected_provider} ({active_model})..."):
                     try:
                         st.session_state.extracted_report_images = extract_images_from_report(uploaded_report)
                         st.session_state.slides_editor_data = generate_smart_outline(
+                            provider=selected_provider,
                             api_key=api_key,
                             source_text=combined_text,
                             num_slides=num_slides,
                             tone=tone,
                             language=output_lang,
                             model_name=active_model,
+                            custom_base_url=custom_base_url,
                         )
                         st.session_state.pptx_bytes = None
                         img_count = len(st.session_state.extracted_report_images)
                         st.success(
-                            f"Smart outline generated using {active_model}! Extracted {img_count} embedded image(s) from your uploaded file."
+                            f"Smart outline generated using {selected_provider} ({active_model})! "
+                            f"Extracted {img_count} embedded image(s) from your uploaded file."
                         )
                     except Exception as e:
                         st.error(f"Failed to generate outline: {e}")
@@ -1583,7 +1774,7 @@ def main():
                             cur_src = src_choices[0]
 
                         chosen_src = st.selectbox(
-                            f"Image Source (Gemini Auto-Recommendation: `{ai_rec_style}`)",
+                            f"Image Source (AI Auto-Recommendation: `{ai_rec_style}`)",
                             options=src_choices,
                             index=src_choices.index(cur_src),
                             key=f"imgsrc_{idx}",
@@ -1686,7 +1877,7 @@ def main():
                         st.session_state.pptx_bytes = build_presentation_pptx(
                             slides_data=st.session_state.slides_editor_data,
                             theme_name=selected_theme,
-                            api_key=api_key,
+                            gemini_api_key=gemini_img_key,
                             use_imagen=use_imagen,
                             unsplash_access_key=unsplash_key,
                             extracted_report_images=st.session_state.extracted_report_images,
