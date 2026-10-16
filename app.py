@@ -2476,9 +2476,10 @@ header[data-testid="stHeader"] { background: transparent; }
     border: none !important; background: transparent !important;
 }
 .st-key-composer .stButton > button, .st-key-composer [data-testid="stPopover"] > div > button {
-    border-radius: 999px; font-size: 0.82rem; padding: 0.25rem 0.6rem; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis;
+    border-radius: 999px; font-size: 0.82rem; padding: 0.25rem 0.5rem; white-space: nowrap;
+    overflow: visible;
 }
+.st-key-composer button p { white-space: nowrap; overflow: visible; text-overflow: clip; }
 .st-key-composer [data-baseweb="select"] > div { border-radius: 999px; min-height: 2rem; font-size: 0.82rem; }
 
 /* Active chat highlight (injected per run) */
@@ -2544,10 +2545,14 @@ def init_state() -> None:
     if "settings" not in ss:
         ss.settings = {
             "api_keys": {},
+            "provider": next(iter(LLM_PROVIDERS)),
+            "models": {},
             "custom_base_url": LLM_PROVIDERS[CUSTOM_PROVIDER]["base_url"] or "",
             "unsplash_key": "",
             "use_imagen": False,
         }
+    ss.settings.setdefault("provider", next(iter(LLM_PROVIDERS)))
+    ss.settings.setdefault("models", {})
     ss.setdefault("custom_tpl_bytes", None)
     ss.setdefault("custom_tpl_name", None)
     if "chats" not in ss:
@@ -2564,66 +2569,135 @@ def init_state() -> None:
 # Settings dialog (all API keys live here)
 # ---------------------------------------------------------------------
 
+def _refresh_model_list() -> None:
+    fetch_live_models.clear()
+    st.session_state.pop("model_fetch_fail", None)
+
+
+def open_settings() -> None:
+    """Open the settings dialog with fresh drafts (no stale widget state from a previous visit)."""
+    ss = st.session_state
+    ss.pop("_settings_draft", None)
+    for key in [k for k in ss.keys() if isinstance(k, str) and k.startswith("set_")]:
+        del ss[key]
+    settings_dialog()
+
+
 @st.dialog("⚙️ Settings", width="large")
 def settings_dialog() -> None:
-    s = st.session_state.settings
-    tab_keys, tab_images, tab_about = st.tabs(["🔑 API Keys", "🖼️ Images", "ℹ️ About"])
+    """One page, one Save: provider -> API key -> model, then optional image keys."""
+    ss = st.session_state
+    s = ss.settings
+    draft = ss.setdefault("_settings_draft", {"keys": {}, "models": {}, "custom_url": None})
+    providers = list(LLM_PROVIDERS.keys())
 
-    new_keys: Dict[str, str] = {}
-    with tab_keys:
-        st.caption(
-            "Keys are kept in this browser session's server memory only. They are never written to disk "
-            "and are cleared when the session ends."
-        )
-        for i, (name, cfg) in enumerate(LLM_PROVIDERS.items()):
-            saved = bool(s["api_keys"].get(name))
-            new_keys[name] = st.text_input(
-                f"{name}  {'✅' if saved else ''}".strip(),
-                value=s["api_keys"].get(name, ""),
-                type="password",
-                placeholder=cfg["key_label"],
-                help=cfg["key_help"],
-                key=f"set_key_{i}",
-            ).strip()
+    st.caption(
+        "Keys are kept in this browser session's server memory only. They are never written to disk "
+        "and are cleared when the session ends."
+    )
+
+    # --- 1. Provider -> API key -> model ---
+    st.markdown("##### 1 · AI model")
+    current = s.get("provider") if s.get("provider") in providers else providers[0]
+
+    def _provider_label(name: str) -> str:
+        has_key = bool(draft["keys"].get(name) or s["api_keys"].get(name))
+        return f"{name}  ✅" if has_key else name
+
+    provider = st.selectbox(
+        "Provider",
+        providers,
+        index=providers.index(current),
+        format_func=_provider_label,
+        key="set_provider",
+    )
+    cfg = LLM_PROVIDERS[provider]
+
+    api_key = st.text_input(
+        f"{provider} API key",
+        value=draft["keys"].get(provider, s["api_keys"].get(provider, "")),
+        type="password",
+        placeholder=cfg["key_label"],
+        help=cfg["key_help"],
+        key=f"set_key_{provider}",
+    ).strip()
+    draft["keys"][provider] = api_key
+
+    if provider == CUSTOM_PROVIDER:
         custom_url = st.text_input(
-            "Custom endpoint URL (used by 'Custom OpenAI-Compatible API')",
-            value=s["custom_base_url"],
+            "Endpoint URL",
+            value=draft["custom_url"] if draft["custom_url"] is not None else s["custom_base_url"],
             help="Full chat completions URL, e.g. https://api.siliconflow.cn/v1/chat/completions",
             key="set_custom_url",
         ).strip()
+        draft["custom_url"] = custom_url
+        base_url = custom_url
+    else:
+        base_url = cfg["base_url"] or ""
 
-    with tab_images:
-        unsplash_key = st.text_input(
-            "Unsplash Access Key (optional)",
-            value=s["unsplash_key"],
-            type="password",
-            help="Enables real stock photography. If blank, Smart Hybrid mode falls back to AI generation.",
-            key="set_unsplash",
+    options, status = get_model_options(provider, api_key, base_url, cfg["models"])
+    saved_model = draft["models"].get(provider) or s["models"].get(provider) or ""
+    custom_default = ""
+    if saved_model in options:
+        model_index = options.index(saved_model)
+    elif saved_model and "Custom Model ID..." in options:
+        model_index = options.index("Custom Model ID...")
+        custom_default = saved_model
+    else:
+        model_index = 0
+    choice = st.selectbox("Model", options, index=model_index, key=f"set_model_{provider}")
+    if choice == "Custom Model ID...":
+        fallback_id = "gemini-3.8-flash" if provider == "Google Gemini" else "gpt-4o-mini"
+        model = st.text_input(
+            "Custom model ID", value=custom_default or fallback_id, key=f"set_custom_model_{provider}"
         ).strip()
-        use_imagen = st.checkbox(
-            "Use Google Imagen 3 for AI illustrations (optional)",
-            value=s["use_imagen"],
-            help="Falls back to Pollinations AI if unavailable. Uses the Google Gemini key from the API Keys tab.",
-            key="set_imagen",
-        )
+    else:
+        model = choice
+    draft["models"][provider] = model
 
-    with tab_about:
-        st.markdown(
-            "**ChatPPT V2** turns reports into consulting-style PowerPoint decks.\n\n"
-            "- Chats live in this browser session; refreshing the page clears them.\n"
-            "- Model lists are fetched live from each provider once its key is saved."
-        )
+    cap_col, refresh_col = st.columns([5, 2], vertical_alignment="center")
+    cap_col.caption(status)
+    refresh_col.button("🔄 Refresh list", key="set_refresh", on_click=_refresh_model_list, use_container_width=True)
+
+    # --- 2. Images (same page, same Save) ---
+    st.divider()
+    st.markdown("##### 2 · Images (optional)")
+    unsplash_key = st.text_input(
+        "Unsplash Access Key",
+        value=s["unsplash_key"],
+        type="password",
+        help="Enables real stock photography. If blank, Smart Hybrid mode falls back to AI generation.",
+        key="set_unsplash",
+    ).strip()
+    use_imagen = st.checkbox(
+        "Use Google Imagen 3 for AI illustrations",
+        value=s["use_imagen"],
+        help="Falls back to Pollinations AI if unavailable. Uses the Google Gemini API key.",
+        key="set_imagen",
+    )
 
     c1, c2 = st.columns(2)
     if c1.button("Save", type="primary", use_container_width=True, key="settings_save"):
-        s["api_keys"] = {k: v for k, v in new_keys.items() if v}
-        s["custom_base_url"] = custom_url
+        keys = dict(s["api_keys"])
+        for name, value in draft["keys"].items():
+            if value:
+                keys[name] = value
+            else:
+                keys.pop(name, None)
+        s["api_keys"] = keys
+        s["provider"] = provider
+        for name, value in draft["models"].items():
+            if value:
+                s["models"][name] = value
+        if draft["custom_url"] is not None:
+            s["custom_base_url"] = draft["custom_url"]
         s["unsplash_key"] = unsplash_key
         s["use_imagen"] = use_imagen
-        fetch_live_models.clear()
-        st.session_state.pop("model_fetch_fail", None)
+        _refresh_model_list()
+        ss.pop("_settings_draft", None)
         st.rerun()
     if c2.button("Cancel", use_container_width=True, key="settings_cancel"):
+        ss.pop("_settings_draft", None)
         st.rerun()
 
 
@@ -2639,7 +2713,7 @@ def render_sidebar() -> None:
             create_chat()
             st.rerun()
         if st.button("⚙️  Settings", key="settings_btn", use_container_width=True):
-            settings_dialog()
+            open_settings()
 
         st.markdown('<div class="sidebar-label">Chats</div>', unsafe_allow_html=True)
         for cid in list(ss.chat_order):
@@ -3024,30 +3098,15 @@ def get_model_options(provider: str, api_key: str, base_url: str, static_models:
     return options, status
 
 
-def render_model_picker() -> dict:
-    """Provider + model selectors (rendered inside a popover). Returns the active model config."""
+def get_active_model_cfg() -> dict:
+    """Provider / key / model chosen in Settings."""
     s = st.session_state.settings
-    provider = st.selectbox("Provider", list(LLM_PROVIDERS.keys()), key="opt_provider")
+    providers = list(LLM_PROVIDERS.keys())
+    provider = s.get("provider") if s.get("provider") in providers else providers[0]
     cfg = LLM_PROVIDERS[provider]
     api_key = (s["api_keys"].get(provider) or "").strip()
     base_url = (s["custom_base_url"] if provider == CUSTOM_PROVIDER else cfg["base_url"]) or ""
-
-    if not api_key:
-        st.warning("No API key for this provider yet. Open ⚙️ Settings in the sidebar.")
-
-    options, status = get_model_options(provider, api_key, base_url, cfg["models"])
-    choice = st.selectbox("Model", options, key=f"opt_model_{provider}")
-    st.caption(status)
-    if st.button("🔄 Refresh model list", key="refresh_models"):
-        fetch_live_models.clear()
-        st.session_state.pop("model_fetch_fail", None)
-        st.rerun()
-
-    if choice == "Custom Model ID...":
-        default_custom = "gemini-3.8-flash" if provider == "Google Gemini" else "gpt-4o-mini"
-        model = st.text_input("Custom model ID", value=default_custom, key=f"opt_custom_model_{provider}").strip()
-    else:
-        model = choice
+    model = s["models"].get(provider) or next((m for m in cfg["models"] if m != "Custom Model ID..."), "")
     return {"provider": provider, "api_key": api_key, "base_url": base_url, "model": model}
 
 
@@ -3059,7 +3118,7 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
         return
     if not model_cfg["api_key"]:
         st.toast(f"Add your {model_cfg['provider']} API key first.", icon="🔑")
-        settings_dialog()
+        open_settings()
         return
 
     is_revision = (
@@ -3124,10 +3183,8 @@ def render_composer(chat: dict) -> None:
 
     # Labels are derived from last-run widget state so popover buttons reflect current choices
     attached = ss.get(file_key)
-    prov_name = ss.get("opt_provider", list(LLM_PROVIDERS.keys())[0])
-    model_state = ss.get(f"opt_model_{prov_name}")
-    if model_state == "Custom Model ID...":
-        model_state = ss.get(f"opt_custom_model_{prov_name}")
+    model_cfg = get_active_model_cfg()
+    model_label = f"🤖 {_short(model_cfg['model'], 18)}" if model_cfg["api_key"] else "🔑 Set up model"
     is_custom_tpl = ss.get("opt_tpl_mode") == "Custom .pptx template"
     if is_custom_tpl and ss.get("custom_tpl_name"):
         tpl_label = f"🎨 {_short(ss['custom_tpl_name'], 13)}"
@@ -3150,11 +3207,14 @@ def render_composer(chat: dict) -> None:
                 label_visibility="collapsed",
                 disabled=busy,
             )
-            c_file, c_tpl, c_tone, c_model, c_deck, c_send = st.columns(
-                [1.15, 1.2, 1.55, 1.45, 1.35, 1.0], vertical_alignment="center"
-            )
+            attach_label = f"📎 {_short(attached.name, 12)}" if attached else "📎 Attach"
+            deck_label = f"⚙ {ss.get('opt_slides', 8)} slides"
+            send_label = "Generate ➤"
+            # Column widths follow label length so button text is never cut off
+            widths = [max(len(lbl), 8) + 5 for lbl in (attach_label, tpl_label, model_label, deck_label, send_label)]
+            c_file, c_tpl, c_model, c_deck, c_send = st.columns(widths, vertical_alignment="center")
 
-            with c_file.popover(f"📎 {_short(attached.name, 12)}" if attached else "📎 Attach", use_container_width=True):
+            with c_file.popover(attach_label, use_container_width=True):
                 report = st.file_uploader(
                     "Report file",
                     type=["pdf", "docx", "txt", "md"],
@@ -3199,21 +3259,16 @@ def render_composer(chat: dict) -> None:
                 else:
                     st.selectbox("Color palette", list(BUILTIN_THEMES.keys()), key="opt_theme")
 
-            tone_label = c_tone.selectbox(
-                "Tone", list(TONE_OPTIONS.keys()), key="opt_tone", label_visibility="collapsed"
-            )
+            if c_model.button(model_label, key="model_btn", use_container_width=True, help="Change provider / model"):
+                open_settings()
 
-            with c_model.popover(f"🤖 {_short(model_state or 'Model', 14)}", use_container_width=True):
-                model_cfg = render_model_picker()
-
-            with c_deck.popover(
-                f"⚙ {ss.get('opt_slides', 8)} slides", use_container_width=True
-            ):
+            with c_deck.popover(deck_label, use_container_width=True):
                 num_slides = st.slider("Number of slides", 4, 20, 8, key="opt_slides")
                 language = st.selectbox("Output language", LANGUAGE_OPTIONS, key="opt_language")
+                tone_label = st.selectbox("Tone", list(TONE_OPTIONS.keys()), key="opt_tone")
 
             send = c_send.button(
-                "Generate ➤", type="primary", use_container_width=True, key=f"send_{cid}", disabled=busy
+                send_label, type="primary", use_container_width=True, key=f"send_{cid}", disabled=busy
             )
 
     if send:
