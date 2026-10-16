@@ -410,6 +410,103 @@ Transform the user's source report into a visually diverse, executive-ready slid
 """
 
 
+# ---------------------------------------------------------------------
+# Live Model Discovery (avoids stale hard-coded model lists)
+# ---------------------------------------------------------------------
+
+# Substrings that identify non-chat models (speech, embeddings, images, moderation...)
+NON_CHAT_KEYWORDS = (
+    "whisper", "tts", "audio", "speech", "transcribe", "embed", "embedding",
+    "guard", "moderation", "dall-e", "imagen", "veo", "image", "realtime",
+    "orpheus", "aqa", "rerank", "babbage", "davinci", "live", "robotics",
+    "computer-use", "search-preview", "omni-moderation",
+)
+
+
+def _is_chat_model(model_id: str) -> bool:
+    lowered = model_id.lower()
+    return not any(kw in lowered for kw in NON_CHAT_KEYWORDS)
+
+
+def _derive_models_url(chat_url: str) -> str:
+    """Turn a '.../chat/completions' endpoint into its sibling '.../models' endpoint."""
+    url = chat_url.strip().rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url[: -len("/chat/completions")] + "/models"
+    return url + "/models"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_live_models(provider: str, api_key: str, base_url: str) -> List[str]:
+    """
+    Query the provider's model-listing endpoint and return chat-capable model IDs.
+    Raises on any failure (st.cache_data never caches exceptions), so callers can fall back.
+    """
+    api_key = (api_key or "").strip()
+
+    if provider == "Google Gemini":
+        client = genai.Client(api_key=api_key)
+        ids = []
+        for m in client.models.list():
+            actions = getattr(m, "supported_actions", None) or []
+            name = (getattr(m, "name", "") or "").replace("models/", "")
+            if "generateContent" in actions and name.startswith("gemini") and _is_chat_model(name):
+                ids.append(name)
+        return sorted(set(ids), reverse=True)
+
+    req = urllib.request.Request(
+        _derive_models_url(base_url),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "ChatPPT-V2/2.0",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    items = data.get("data", data) if isinstance(data, dict) else data
+    ids = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        # Groq flags retired/inactive models via an "active" field
+        if item.get("active") is False:
+            continue
+        model_id = item["id"]
+        if not _is_chat_model(model_id):
+            continue
+        # OpenAI lists many legacy/non-chat families; keep only chat-capable prefixes
+        if provider == "OpenAI (Paid)" and not model_id.startswith(("gpt-", "chatgpt-", "o1", "o3", "o4")):
+            continue
+        ids.append(model_id)
+    return sorted(set(ids))
+
+
+def resolve_model_options(provider: str, api_key: str, base_url: str, static_models: List[str]):
+    """
+    Return (model_list, status_message). Prefers the live list; falls back to the static preset.
+    The static list's order is kept for entries that still exist so sensible defaults stay on top.
+    """
+    static_clean = [m for m in static_models if m != "Custom Model ID..."]
+    needs_key = provider != "OpenRouter (All-in-One)"
+    if needs_key and not (api_key or "").strip():
+        return static_models, "Enter your API key to load the live model list."
+    if provider == "Custom OpenAI-Compatible API" and not (base_url or "").strip():
+        return static_models, "Enter an endpoint URL to load models."
+
+    try:
+        live = fetch_live_models(provider, api_key, base_url or "")
+    except Exception as exc:  # noqa: BLE001 - any network/auth/parse failure falls back
+        return static_models, f"Could not fetch live models ({type(exc).__name__}); showing presets."
+    if not live:
+        return static_models, "Provider returned no chat models; showing presets."
+
+    preferred = [m for m in static_clean if m in live]
+    ordered = preferred + [m for m in live if m not in preferred]
+    return ordered + ["Custom Model ID..."], f"Loaded {len(live)} live models from {provider}."
+
+
 def extract_clean_json_str(raw_text: str) -> str:
     """
     Strip <think>...</think> reasoning blocks and Markdown code fences from LLM responses
@@ -425,6 +522,61 @@ def extract_clean_json_str(raw_text: str) -> str:
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
         return cleaned[first_brace:last_brace + 1]
     return cleaned
+
+
+def _parses_as_outline(text: str) -> bool:
+    """Return True if the text is valid JSON that satisfies the PresentationOutline schema."""
+    try:
+        PresentationOutline.model_validate_json(text)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def repair_json_str(raw_text: str) -> str:
+    """
+    Best-effort repair for slightly malformed LLM JSON (the most common failures are a stray
+    closing brace/bracket or missing closers at the end). Returns the original text unchanged
+    if no repair produces a schema-valid outline.
+    """
+    if _parses_as_outline(raw_text):
+        return raw_text
+
+    # Scan once, ignoring characters inside string literals
+    stack: List[str] = []
+    closer_positions: List[int] = []
+    in_string = False
+    escaped = False
+    for idx, ch in enumerate(raw_text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            closer_positions.append(idx)
+            if stack and stack[-1] == ch:
+                stack.pop()
+
+    # Strategy 1: truncated output -> close any unterminated string/containers
+    candidate = raw_text + ('"' if in_string else "") + "".join(reversed(stack))
+    if _parses_as_outline(candidate):
+        return candidate
+
+    # Strategy 2: a single stray closing brace/bracket -> try removing each one
+    for pos in closer_positions:
+        candidate = raw_text[:pos] + raw_text[pos + 1:]
+        if _parses_as_outline(candidate):
+            return candidate
+
+    return raw_text
 
 
 def call_openai_compatible_json(
@@ -481,9 +633,26 @@ def call_openai_compatible_json(
                 return extract_clean_json_str(content)
         except urllib.error.HTTPError as http_err:
             err_body = http_err.read().decode("utf-8", errors="ignore")
-            # If the specific model doesn't support response_format: json_object, retry once without it
-            if use_json_mode and http_err.code == 400 and "response_format" in err_body.lower():
-                continue
+            lowered_err = err_body.lower()
+            if http_err.code == 400:
+                # Groq-style "json_validate_failed": the server rejected the model's malformed JSON
+                # but returns the raw text in `failed_generation`; try to repair it locally.
+                try:
+                    failed_text = json.loads(err_body).get("error", {}).get("failed_generation")
+                except (ValueError, AttributeError):
+                    failed_text = None
+                if isinstance(failed_text, str) and failed_text.strip():
+                    repaired = repair_json_str(extract_clean_json_str(failed_text))
+                    if _parses_as_outline(repaired):
+                        return repaired
+                # Model rejected json_object mode or produced invalid JSON in strict mode:
+                # retry once without response_format and let the local parser/repair handle it.
+                if use_json_mode and (
+                    "response_format" in lowered_err
+                    or "json_validate_failed" in lowered_err
+                    or "failed to generate json" in lowered_err
+                ):
+                    continue
             raise RuntimeError(f"Provider API HTTP {http_err.code}: {err_body}") from http_err
 
 
@@ -627,7 +796,7 @@ def generate_smart_outline(
             user_prompt=user_prompt,
         )
 
-    parsed_outline = PresentationOutline.model_validate_json(raw_json)
+    parsed_outline = PresentationOutline.model_validate_json(repair_json_str(raw_json))
     return sanitize_outline_dict(parsed_outline)
 
 
@@ -1486,11 +1655,20 @@ def main():
                 help="Full chat completions URL, e.g., https://api.siliconflow.cn/v1/chat/completions",
             ).strip()
 
+        effective_base_url = custom_base_url or provider_cfg["base_url"] or ""
+        model_options, model_status = resolve_model_options(
+            selected_provider, api_key, effective_base_url, provider_cfg["models"]
+        )
         model_choice = st.selectbox(
             "Model Name",
-            provider_cfg["models"],
+            model_options,
             index=0,
         )
+        status_col, refresh_col = st.columns([4, 1])
+        status_col.caption(model_status)
+        if refresh_col.button("🔄", help="Refresh the live model list", key="refresh_models"):
+            fetch_live_models.clear()
+            st.rerun()
         if model_choice == "Custom Model ID...":
             default_custom = "gemini-3.8-flash" if selected_provider == "Google Gemini" else "gpt-4o-mini"
             active_model = st.text_input("Enter Custom Model ID", value=default_custom).strip()
