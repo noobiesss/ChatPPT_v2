@@ -1,4 +1,4 @@
-streamlit>=1.38.0
+streamlit>=1.46.0
 google-genai>=1.0.0
 python-pptx>=1.0.2
 pypdf>=4.3.0

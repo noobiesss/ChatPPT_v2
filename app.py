@@ -1,6 +1,8 @@
 import io
 import json
 import re
+import time
+import uuid
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -1615,464 +1617,846 @@ def parse_kpis_from_editor(raw_text: str) -> List[dict]:
 
 
 # =====================================================================
-# 8. Main Streamlit Application
+# 8. Chat-Style UI (Sidebar chats, Composer, Settings dialog)
 # =====================================================================
 
-def main():
-    st.set_page_config(page_title="ChatPPT V2 - Smart Visual Presentation Generator", page_icon="📊", layout="wide")
+CUSTOM_PROVIDER = "Custom OpenAI-Compatible API"
+OPENROUTER_PROVIDER = "OpenRouter (All-in-One)"
 
-    if "slides_editor_data" not in st.session_state:
-        st.session_state.slides_editor_data = None
-    if "extracted_report_images" not in st.session_state:
-        st.session_state.extracted_report_images = []
-    if "pptx_bytes" not in st.session_state:
-        st.session_state.pptx_bytes = None
+TONE_OPTIONS = {
+    "Executive (McKinsey)": "Executive & Consulting (McKinsey Style)",
+    "Professional": "Professional & Corporate",
+    "Academic": "Academic & Analytical",
+    "Venture Pitch": "Persuasive & Venture Pitch",
+    "Technical": "Technical Architecture & Engineering",
+}
+LANGUAGE_OPTIONS = ["English", "Simplified Chinese", "Traditional Chinese", "Malay", "Japanese"]
+REVISION_MAX_CHARS = 600  # Short follow-up messages are treated as revision instructions
 
-    # --- Sidebar Configuration ---
-    with st.sidebar:
-        st.title("⚙️ ChatPPT V2 Settings")
+APP_CSS = """
+<style>
+/* Theme-neutral styling: text and page colors come from the active Streamlit theme (light or dark).
+   Surfaces use translucent grey so contrast is preserved in both themes. */
+header[data-testid="stHeader"] { background: transparent; }
+.block-container { max-width: 880px; padding-top: 2rem; padding-bottom: 1rem; }
 
-        st.subheader("0. AI Provider & Model")
-        selected_provider = st.selectbox(
-            "LLM Provider",
-            list(LLM_PROVIDERS.keys()),
-            index=0,
-            help="Switch between Google Gemini, Groq (Fast & Free tier), OpenAI, DeepSeek, OpenRouter, or any Custom endpoint.",
+/* Sidebar */
+[data-testid="stSidebar"] .stButton > button {
+    justify-content: flex-start; text-align: left; border: none; background: transparent;
+    box-shadow: none; font-weight: 400; padding: 0.45rem 0.7rem; border-radius: 10px;
+}
+[data-testid="stSidebar"] .stButton > button:hover { background: rgba(128, 128, 128, 0.16); }
+.st-key-new_chat_btn button {
+    background: #C96442 !important; color: #FFFFFF !important; font-weight: 600 !important;
+    justify-content: center !important;
+}
+.st-key-new_chat_btn button:hover { background: #B5573A !important; }
+.st-key-settings_btn button {
+    border: 1px solid rgba(128, 128, 128, 0.40) !important; justify-content: center !important;
+}
+.sidebar-label {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em;
+    opacity: 0.6; margin: 1.1rem 0 0.3rem 0.4rem;
+}
+
+/* Hero (empty chat state) */
+.hero { text-align: center; padding: 3rem 0 1.5rem; }
+.hero h1 { font-size: 2.1rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
+.hero p { opacity: 0.7; margin: 0; }
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.8rem; margin: 1.6rem 0 0.5rem; }
+.step {
+    background: rgba(128, 128, 128, 0.09); border: 1px solid rgba(128, 128, 128, 0.28);
+    border-radius: 14px; padding: 0.9rem 1rem; text-align: left;
+}
+.step b { display: block; margin-bottom: 0.2rem; }
+.step span { opacity: 0.72; font-size: 0.88rem; }
+@media (max-width: 700px) { .steps { grid-template-columns: 1fr; } }
+
+/* Composer dock (sticky at the bottom of the main area) */
+.st-key-composer_dock {
+    position: sticky; bottom: 0; z-index: 100; padding: 1.5rem 0 0.75rem;
+    background: linear-gradient(to top, __DOCK_BG__ 78%, transparent);
+}
+.st-key-composer {
+    background: rgba(128, 128, 128, 0.10); border: 1px solid rgba(128, 128, 128, 0.35);
+    border-radius: 20px; padding: 0.7rem 1rem 0.6rem;
+}
+.st-key-composer textarea { font-size: 1rem; }
+.st-key-composer [data-baseweb="textarea"], .st-key-composer [data-baseweb="base-input"] {
+    border: none !important; background: transparent !important;
+}
+.st-key-composer .stButton > button, .st-key-composer [data-testid="stPopover"] > div > button {
+    border-radius: 999px; font-size: 0.82rem; padding: 0.25rem 0.6rem; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.st-key-composer [data-baseweb="select"] > div { border-radius: 999px; min-height: 2rem; font-size: 0.82rem; }
+
+/* Active chat highlight (injected per run) */
+.st-key-chat_btn___ACTIVE__ button { background: rgba(128, 128, 128, 0.26) !important; font-weight: 600 !important; }
+</style>
+"""
+
+
+def _dock_background() -> str:
+    """Opaque color for the sticky composer's fade-out, matched to the active Streamlit theme."""
+    try:
+        theme_type = st.context.theme.type  # "light", "dark" or None (requires Streamlit >= 1.46)
+    except Exception:  # noqa: BLE001
+        theme_type = None
+    if theme_type == "dark":
+        return "#0E1117"
+    return st.get_option("theme.backgroundColor") or "#FFFFFF"
+
+
+def inject_css(active_chat_id: str) -> None:
+    """Inject the global stylesheet and highlight the active chat button in the sidebar."""
+    css = APP_CSS.replace("__ACTIVE__", active_chat_id).replace("__DOCK_BG__", _dock_background())
+    st.markdown(css, unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------
+# Session state helpers
+# ---------------------------------------------------------------------
+
+def create_chat() -> None:
+    """Create a new empty chat and make it the active one."""
+    ss = st.session_state
+    cid = uuid.uuid4().hex[:8]
+    ss.chats[cid] = {
+        "id": cid,
+        "title": "New chat",
+        "messages": [],
+        "slides": None,
+        "report_images": [],
+        "pptx_bytes": None,
+        "source_text": "",
+        "gen": 0,
+        "composer_ver": 0,
+        "pending": None,
+    }
+    ss.chat_order.insert(0, cid)
+    ss.active_chat = cid
+
+
+def delete_chat(cid: str) -> None:
+    ss = st.session_state
+    ss.chats.pop(cid, None)
+    if cid in ss.chat_order:
+        ss.chat_order.remove(cid)
+    if not ss.chats:
+        create_chat()
+    elif ss.active_chat not in ss.chats:
+        ss.active_chat = ss.chat_order[0]
+
+
+def init_state() -> None:
+    ss = st.session_state
+    if "settings" not in ss:
+        ss.settings = {
+            "api_keys": {},
+            "custom_base_url": LLM_PROVIDERS[CUSTOM_PROVIDER]["base_url"] or "",
+            "unsplash_key": "",
+            "use_imagen": False,
+        }
+    if "chats" not in ss:
+        ss.chats = {}
+        ss.chat_order = []
+        ss.active_chat = None
+    if not ss.chats:
+        create_chat()
+    if ss.active_chat not in ss.chats:
+        ss.active_chat = ss.chat_order[0]
+
+
+# ---------------------------------------------------------------------
+# Settings dialog (all API keys live here)
+# ---------------------------------------------------------------------
+
+@st.dialog("⚙️ Settings", width="large")
+def settings_dialog() -> None:
+    s = st.session_state.settings
+    tab_keys, tab_images, tab_about = st.tabs(["🔑 API Keys", "🖼️ Images", "ℹ️ About"])
+
+    new_keys: Dict[str, str] = {}
+    with tab_keys:
+        st.caption(
+            "Keys are kept in this browser session's server memory only. They are never written to disk "
+            "and are cleared when the session ends."
         )
-        provider_cfg = LLM_PROVIDERS[selected_provider]
-
-        api_key = st.text_input(
-            provider_cfg["key_label"],
-            type="password",
-            help=provider_cfg["key_help"],
-        )
-
-        custom_base_url = None
-        if selected_provider == "Custom OpenAI-Compatible API":
-            custom_base_url = st.text_input(
-                "Custom Endpoint Base URL",
-                value=provider_cfg["base_url"],
-                help="Full chat completions URL, e.g., https://api.siliconflow.cn/v1/chat/completions",
-            ).strip()
-
-        effective_base_url = custom_base_url or provider_cfg["base_url"] or ""
-        model_options, model_status = resolve_model_options(
-            selected_provider, api_key, effective_base_url, provider_cfg["models"]
-        )
-        model_choice = st.selectbox(
-            "Model Name",
-            model_options,
-            index=0,
-        )
-        status_col, refresh_col = st.columns([4, 1])
-        status_col.caption(model_status)
-        if refresh_col.button("🔄", help="Refresh the live model list", key="refresh_models"):
-            fetch_live_models.clear()
-            st.rerun()
-        if model_choice == "Custom Model ID...":
-            default_custom = "gemini-3.8-flash" if selected_provider == "Google Gemini" else "gpt-4o-mini"
-            active_model = st.text_input("Enter Custom Model ID", value=default_custom).strip()
-        else:
-            active_model = model_choice
-
-        st.subheader("1. Deck Parameters")
-        num_slides = st.slider("Number of Slides", min_value=4, max_value=20, value=8, step=1)
-        tone = st.selectbox(
-            "Presentation Tone",
-            [
-                "Executive & Consulting (McKinsey Style)",
-                "Professional & Corporate",
-                "Academic & Analytical",
-                "Persuasive & Venture Pitch",
-                "Technical Architecture & Engineering",
-            ],
-        )
-        output_lang = st.selectbox(
-            "Output Language",
-            ["English", "Simplified Chinese", "Traditional Chinese", "Malay", "Japanese"],
-        )
-
-        st.subheader("2. Visual Theme & Template")
-        template_mode = st.radio(
-            "Styling Mode",
-            ["Built-in 16:9 Color Theme", "Upload Custom .pptx Template"],
-        )
-        selected_theme = st.selectbox("Color Palette", list(BUILTIN_THEMES.keys()))
-        uploaded_template = None
-        if template_mode == "Upload Custom .pptx Template":
-            uploaded_template = st.file_uploader(
-                "Upload .pptx Template",
-                type=["pptx"],
-                help="Preserves your template's Slide Master background while using the selected Color Palette for cards and charts.",
-            )
-
-        st.subheader("3. Smart Hybrid Image Engine")
-        unsplash_key = st.text_input(
-            "Unsplash Access Key (Optional)",
-            type="password",
-            help="Enter your free Unsplash Access Key for real stock photography. If left blank, Smart Hybrid Mode automatically falls back to AI generation.",
-        )
-        use_imagen = st.checkbox(
-            "Use Google Imagen 3 (Optional)",
-            value=False,
-            help="When enabled, tries Google Imagen 3 first for AI illustrations and falls back to Pollinations AI if unavailable.",
-        )
-
-        # Determine which key to pass to Imagen 3 if enabled
-        gemini_img_key = api_key if selected_provider == "Google Gemini" else None
-        if use_imagen and selected_provider != "Google Gemini":
-            gemini_img_key = st.text_input(
-                "Gemini API Key (for Imagen 3)",
+        for i, (name, cfg) in enumerate(LLM_PROVIDERS.items()):
+            saved = bool(s["api_keys"].get(name))
+            new_keys[name] = st.text_input(
+                f"{name}  {'✅' if saved else ''}".strip(),
+                value=s["api_keys"].get(name, ""),
                 type="password",
-                help="Provide a Google Gemini API Key specifically for Imagen 3 image generation.",
-            )
+                placeholder=cfg["key_label"],
+                help=cfg["key_help"],
+                key=f"set_key_{i}",
+            ).strip()
+        custom_url = st.text_input(
+            "Custom endpoint URL (used by 'Custom OpenAI-Compatible API')",
+            value=s["custom_base_url"],
+            help="Full chat completions URL, e.g. https://api.siliconflow.cn/v1/chat/completions",
+            key="set_custom_url",
+        ).strip()
 
-    # --- Main Content Area ---
-    st.title("📊 ChatPPT V2 — Smart Visual Slide Generator")
-    st.caption(
-        "Multi-Provider AI Slide Generator (Gemini / Groq / OpenAI / DeepSeek / OpenRouter) with 8 Consulting Layouts & "
-        "Smart Hybrid Visuals (Unsplash Real Stock Photography + AI Concept Illustrations + Extracted Report Figures)."
+    with tab_images:
+        unsplash_key = st.text_input(
+            "Unsplash Access Key (optional)",
+            value=s["unsplash_key"],
+            type="password",
+            help="Enables real stock photography. If blank, Smart Hybrid mode falls back to AI generation.",
+            key="set_unsplash",
+        ).strip()
+        use_imagen = st.checkbox(
+            "Use Google Imagen 3 for AI illustrations (optional)",
+            value=s["use_imagen"],
+            help="Falls back to Pollinations AI if unavailable. Uses the Google Gemini key from the API Keys tab.",
+            key="set_imagen",
+        )
+
+    with tab_about:
+        st.markdown(
+            "**ChatPPT V2** turns reports into consulting-style PowerPoint decks.\n\n"
+            "- Chats live in this browser session; refreshing the page clears them.\n"
+            "- Model lists are fetched live from each provider once its key is saved."
+        )
+
+    c1, c2 = st.columns(2)
+    if c1.button("Save", type="primary", use_container_width=True, key="settings_save"):
+        s["api_keys"] = {k: v for k, v in new_keys.items() if v}
+        s["custom_base_url"] = custom_url
+        s["unsplash_key"] = unsplash_key
+        s["use_imagen"] = use_imagen
+        fetch_live_models.clear()
+        st.session_state.pop("model_fetch_fail", None)
+        st.rerun()
+    if c2.button("Cancel", use_container_width=True, key="settings_cancel"):
+        st.rerun()
+
+
+# ---------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------
+
+def render_sidebar() -> None:
+    ss = st.session_state
+    with st.sidebar:
+        st.markdown("### 📊 ChatPPT")
+        if st.button("＋  New chat", key="new_chat_btn", use_container_width=True):
+            create_chat()
+            st.rerun()
+        if st.button("⚙️  Settings", key="settings_btn", use_container_width=True):
+            settings_dialog()
+
+        st.markdown('<div class="sidebar-label">Chats</div>', unsafe_allow_html=True)
+        for cid in list(ss.chat_order):
+            title = ss.chats[cid]["title"]
+            title = title if len(title) <= 24 else title[:23] + "…"
+            c1, c2 = st.columns([6, 1], vertical_alignment="center")
+            if c1.button(f"💬  {title}", key=f"chat_btn_{cid}", use_container_width=True):
+                ss.active_chat = cid
+                st.rerun()
+            if c2.button("✕", key=f"del_{cid}", help="Delete chat"):
+                delete_chat(cid)
+                st.rerun()
+
+
+# ---------------------------------------------------------------------
+# Chat rendering
+# ---------------------------------------------------------------------
+
+def render_hero() -> None:
+    st.markdown(
+        """
+        <div class="hero">
+          <h1>What are we presenting today?</h1>
+          <p>Drop in a report or paste your notes, and I'll design a consulting-style deck.</p>
+          <div class="steps">
+            <div class="step"><b>1 · Add your source</b><span>Attach a PDF, DOCX, TXT or MD file, or paste text.</span></div>
+            <div class="step"><b>2 · Review the outline</b><span>Tweak layouts, charts, KPIs and images per slide.</span></div>
+            <div class="step"><b>3 · Download the .pptx</b><span>Fully editable shapes and native charts.</span></div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    # Step 1: Upload or Paste Source Material
-    st.header("Step 1: Provide Your Report or Notes")
-    col1, col2 = st.columns(2)
 
-    with col1:
-        uploaded_report = st.file_uploader(
-            "Upload Report (.pdf, .docx, .txt, .md) — Embedded images are extracted automatically!",
-            type=["pdf", "docx", "txt", "md"],
-        )
+def render_messages(chat: dict) -> None:
+    for m in chat["messages"]:
+        is_user = m["role"] == "user"
+        with st.chat_message(m["role"], avatar=None if is_user else "📊"):
+            if m.get("attachment"):
+                st.markdown(f"📎 `{m['attachment']}`")
+            if m.get("content"):
+                st.markdown(m["content"])
+            if m.get("meta"):
+                st.caption(m["meta"])
 
-    with col2:
-        pasted_text = st.text_area(
-            "Or Paste Report Text / Data Directly",
-            height=160,
-            placeholder="Paste your report, experimental metrics, or project summary here...",
-        )
 
-    if st.button("✨ Step 1: Analyze Report & Generate Smart Visual Outline", type="primary", use_container_width=True):
-        if not api_key:
-            st.error(f"Please enter your {provider_cfg['key_label']} in the sidebar first.")
-        else:
-            file_text = extract_text_from_uploaded_file(uploaded_report)
-            combined_text = "\n\n".join(filter(None, [file_text.strip(), pasted_text.strip()]))
+def render_outline_editor(chat: dict) -> None:
+    """Interactive per-slide editor. Widget keys are scoped by chat id + generation counter."""
+    kp = f"{chat['id']}_{chat['gen']}_"
+    layout_options = [lt.value for lt in LayoutType]
+    report_imgs = chat["report_images"]
 
-            if not combined_text:
-                st.warning("Please upload a document or paste text first.")
-            else:
-                with st.spinner(f"Extracting embedded images & designing multi-layout slide deck via {selected_provider} ({active_model})..."):
-                    try:
-                        st.session_state.extracted_report_images = extract_images_from_report(uploaded_report)
-                        st.session_state.slides_editor_data = generate_smart_outline(
-                            provider=selected_provider,
-                            api_key=api_key,
-                            source_text=combined_text,
-                            num_slides=num_slides,
-                            tone=tone,
-                            language=output_lang,
-                            model_name=active_model,
-                            custom_base_url=custom_base_url,
-                        )
-                        st.session_state.pptx_bytes = None
-                        img_count = len(st.session_state.extracted_report_images)
-                        st.success(
-                            f"Smart outline generated using {selected_provider} ({active_model})! "
-                            f"Extracted {img_count} embedded image(s) from your uploaded file."
-                        )
-                    except Exception as e:
-                        st.error(f"Failed to generate outline: {e}")
+    if report_imgs:
+        with st.expander(f"🖼️ Preview {len(report_imgs)} Embedded Image(s) Extracted from Your Report"):
+            img_cols = st.columns(min(len(report_imgs), 4))
+            for r_idx, r_img in enumerate(report_imgs):
+                with img_cols[r_idx % 4]:
+                    st.image(r_img["bytes"], caption=f"[{r_idx}] {r_img['name']}", use_container_width=True)
 
-    # Step 2: Interactive Multi-Layout Outline Editor
-    if st.session_state.slides_editor_data:
-        st.divider()
-        st.header("Step 2: Review & Customize Layouts, Charts, and Smart Hybrid Visuals")
-        st.info(
-            "💡 You can change any slide's **Layout Type**, edit structured points (`Heading :: Detail`), "
-            "or customize **Smart Hybrid Visuals** (which automatically choose between Unsplash Stock Photos and AI Illustrations)."
-        )
+    updated_slides = []
 
-        layout_options = [lt.value for lt in LayoutType]
-        report_imgs = st.session_state.extracted_report_images
+    for idx, slide in enumerate(chat["slides"]):
+        current_layout = slide.get("layout_type", LayoutType.BULLET_CARDS.value)
+        expander_label = f"Slide {idx + 1} [{current_layout.upper()}] — {slide.get('action_title', '')}"
 
-        if report_imgs:
-            with st.expander(f"🖼️ Preview {len(report_imgs)} Embedded Image(s) Extracted from Your Report"):
-                img_cols = st.columns(min(len(report_imgs), 4))
-                for r_idx, r_img in enumerate(report_imgs):
-                    with img_cols[r_idx % 4]:
-                        st.image(r_img["bytes"], caption=f"[{r_idx}] {r_img['name']}", use_container_width=True)
+        with st.expander(expander_label, expanded=(idx < 1)):
+            top_c1, top_c2 = st.columns([1, 3])
+            with top_c1:
+                new_layout = st.selectbox(
+                    "Slide Layout Type",
+                    options=layout_options,
+                    index=layout_options.index(current_layout) if current_layout in layout_options else 2,
+                    key=f"{kp}layout_{idx}",
+                )
+            with top_c2:
+                new_title = st.text_input(
+                    "Action Title (Conclusion-First)",
+                    value=slide.get("action_title", ""),
+                    key=f"{kp}title_{idx}",
+                )
 
-        updated_slides = []
+            slide["layout_type"] = new_layout
+            slide["action_title"] = new_title
 
-        for idx, slide in enumerate(st.session_state.slides_editor_data):
-            current_layout = slide.get("layout_type", LayoutType.BULLET_CARDS.value)
-            expander_label = f"Slide {idx + 1} [{current_layout.upper()}] — {slide.get('action_title', '')}"
+            # Dynamic Editor Fields Based on Selected Layout
+            if new_layout in (LayoutType.COVER.value, LayoutType.SECTION_DIVIDER.value):
+                slide["subtitle_or_context"] = st.text_area(
+                    "Subtitle / Section Overview",
+                    value=slide.get("subtitle_or_context") or "",
+                    height=80,
+                    key=f"{kp}sub_{idx}",
+                )
 
-            with st.expander(expander_label, expanded=(idx < 2)):
-                top_c1, top_c2 = st.columns([1, 3])
-                with top_c1:
-                    new_layout = st.selectbox(
-                        "Slide Layout Type",
-                        options=layout_options,
-                        index=layout_options.index(current_layout) if current_layout in layout_options else 2,
-                        key=f"layout_{idx}",
-                    )
-                with top_c2:
-                    new_title = st.text_input(
-                        "Action Title (Conclusion-First)",
-                        value=slide.get("action_title", ""),
-                        key=f"title_{idx}",
-                    )
+            elif new_layout in (LayoutType.BULLET_CARDS.value, LayoutType.THREE_CARDS.value):
+                hint = "Enter 3 items (Heading :: Detail)" if new_layout == "three_cards" else "Enter 3-4 items (Heading :: Detail)"
+                raw_pts = st.text_area(
+                    f"Structured Points — One per line formatted as `{hint}`",
+                    value=format_points_for_editor(slide.get("points", [])),
+                    height=120,
+                    key=f"{kp}pts_{idx}",
+                )
+                slide["points"] = parse_points_from_editor(raw_pts)
 
-                slide["layout_type"] = new_layout
-                slide["action_title"] = new_title
+            elif new_layout == LayoutType.TWO_COLUMN.value:
+                lc1, lc2 = st.columns(2)
+                left_col = slide.get("left_column") or {"column_title": "Left Column", "items": []}
+                right_col = slide.get("right_column") or {"column_title": "Right Column", "items": []}
 
-                # Dynamic Editor Fields Based on Selected Layout
-                if new_layout in (LayoutType.COVER.value, LayoutType.SECTION_DIVIDER.value):
-                    slide["subtitle_or_context"] = st.text_area(
-                        "Subtitle / Section Overview",
-                        value=slide.get("subtitle_or_context") or "",
-                        height=80,
-                        key=f"sub_{idx}",
-                    )
-
-                elif new_layout in (LayoutType.BULLET_CARDS.value, LayoutType.THREE_CARDS.value):
-                    hint = "Enter 3 items (Heading :: Detail)" if new_layout == "three_cards" else "Enter 3-4 items (Heading :: Detail)"
-                    raw_pts = st.text_area(
-                        f"Structured Points — One per line formatted as `{hint}`",
-                        value=format_points_for_editor(slide.get("points", [])),
-                        height=120,
-                        key=f"pts_{idx}",
-                    )
-                    slide["points"] = parse_points_from_editor(raw_pts)
-
-                elif new_layout == LayoutType.TWO_COLUMN.value:
-                    lc1, lc2 = st.columns(2)
-                    left_col = slide.get("left_column") or {"column_title": "Left Column", "items": []}
-                    right_col = slide.get("right_column") or {"column_title": "Right Column", "items": []}
-
-                    with lc1:
-                        l_title = st.text_input("Left Column Header", value=left_col.get("column_title", ""), key=f"l_title_{idx}")
-                        l_pts = st.text_area(
-                            "Left Column Points (`Heading :: Detail`)",
-                            value=format_points_for_editor(left_col.get("items", [])),
-                            height=110,
-                            key=f"l_pts_{idx}",
-                        )
-                    with lc2:
-                        r_title = st.text_input("Right Column Header", value=right_col.get("column_title", ""), key=f"r_title_{idx}")
-                        r_pts = st.text_area(
-                            "Right Column Points (`Heading :: Detail`)",
-                            value=format_points_for_editor(right_col.get("items", [])),
-                            height=110,
-                            key=f"r_pts_{idx}",
-                        )
-                    slide["left_column"] = {"column_title": l_title, "items": parse_points_from_editor(l_pts)}
-                    slide["right_column"] = {"column_title": r_title, "items": parse_points_from_editor(r_pts)}
-
-                elif new_layout == LayoutType.KPI_METRICS.value:
-                    raw_kpis = st.text_area(
-                        "Hero KPI Metrics — One per line formatted as `Value | Label | Context` (e.g. `+62% | Latency Drop | Across Q3 peak loads`)",
-                        value=format_kpis_for_editor(slide.get("kpis", [])),
+                with lc1:
+                    l_title = st.text_input("Left Column Header", value=left_col.get("column_title", ""), key=f"{kp}l_title_{idx}")
+                    l_pts = st.text_area(
+                        "Left Column Points (`Heading :: Detail`)",
+                        value=format_points_for_editor(left_col.get("items", [])),
                         height=110,
-                        key=f"kpis_{idx}",
+                        key=f"{kp}l_pts_{idx}",
                     )
-                    slide["kpis"] = parse_kpis_from_editor(raw_kpis)
-
-                elif new_layout == LayoutType.CHART_SLIDE.value:
-                    chart_obj = slide.get("chart") or {}
-                    cc1, cc2 = st.columns(2)
-                    with cc1:
-                        c_types = [ct.value for ct in ChartType]
-                        cur_ct = chart_obj.get("chart_type", "bar")
-                        new_ct = st.selectbox(
-                            "Chart Type",
-                            options=c_types,
-                            index=c_types.index(cur_ct) if cur_ct in c_types else 0,
-                            key=f"ctype_{idx}",
-                        )
-                        new_ctitle = st.text_input("Chart Title", value=chart_obj.get("chart_title", ""), key=f"ctitle_{idx}")
-                        new_sname = st.text_input("Series Name & Unit", value=chart_obj.get("series_name", "Value"), key=f"csname_{idx}")
-                    with cc2:
-                        cats_str = st.text_input(
-                            "Categories (comma-separated)",
-                            value=", ".join(chart_obj.get("categories", ["Q1", "Q2", "Q3"])),
-                            key=f"ccats_{idx}",
-                        )
-                        vals_str = st.text_input(
-                            "Values (comma-separated numbers)",
-                            value=", ".join(str(v) for v in chart_obj.get("values", [10.0, 20.0, 30.0])),
-                            key=f"cvals_{idx}",
-                        )
-
-                    parsed_cats = [c.strip() for c in cats_str.split(",") if c.strip()]
-                    parsed_vals = []
-                    for v in vals_str.split(","):
-                        try:
-                            parsed_vals.append(float(v.strip()))
-                        except ValueError:
-                            pass
-                    if not parsed_cats or not parsed_vals:
-                        parsed_cats, parsed_vals = ["Item 1", "Item 2"], [50.0, 80.0]
-
-                    slide["chart"] = {
-                        "chart_type": new_ct,
-                        "chart_title": new_ctitle,
-                        "series_name": new_sname,
-                        "categories": parsed_cats,
-                        "values": parsed_vals,
-                    }
-
-                    raw_c_pts = st.text_area(
-                        "Right-Side Chart Commentary (`Heading :: Detail`)",
-                        value=format_points_for_editor(slide.get("points", [])),
-                        height=100,
-                        key=f"cpts_{idx}",
+                with lc2:
+                    r_title = st.text_input("Right Column Header", value=right_col.get("column_title", ""), key=f"{kp}r_title_{idx}")
+                    r_pts = st.text_area(
+                        "Right Column Points (`Heading :: Detail`)",
+                        value=format_points_for_editor(right_col.get("items", [])),
+                        height=110,
+                        key=f"{kp}r_pts_{idx}",
                     )
-                    slide["points"] = parse_points_from_editor(raw_c_pts)
+                slide["left_column"] = {"column_title": l_title, "items": parse_points_from_editor(l_pts)}
+                slide["right_column"] = {"column_title": r_title, "items": parse_points_from_editor(r_pts)}
 
-                elif new_layout == LayoutType.IMAGE_SPLIT.value:
-                    img_obj = slide.get("image") or {}
-                    ai_rec_style = img_obj.get("preferred_style", VisualStyle.AI_ILLUSTRATION.value)
-                    ic1, ic2 = st.columns(2)
+            elif new_layout == LayoutType.KPI_METRICS.value:
+                raw_kpis = st.text_area(
+                    "Hero KPI Metrics — One per line formatted as `Value | Label | Context` (e.g. `+62% | Latency Drop | Across Q3 peak loads`)",
+                    value=format_kpis_for_editor(slide.get("kpis", [])),
+                    height=110,
+                    key=f"{kp}kpis_{idx}",
+                )
+                slide["kpis"] = parse_kpis_from_editor(raw_kpis)
 
-                    with ic1:
-                        src_choices = [
-                            "Smart Hybrid (Auto)",
-                            "Unsplash Stock Photo",
-                            "AI Generated Illustration",
-                            "Upload Custom Image",
-                            "Visual Placeholder Only",
-                        ]
-                        if report_imgs:
-                            src_choices.insert(1, "Use Image from Report")
-
-                        cur_src = slide.get("image_source_mode", "Smart Hybrid (Auto)")
-                        if cur_src not in src_choices:
-                            cur_src = src_choices[0]
-
-                        chosen_src = st.selectbox(
-                            f"Image Source (AI Auto-Recommendation: `{ai_rec_style}`)",
-                            options=src_choices,
-                            index=src_choices.index(cur_src),
-                            key=f"imgsrc_{idx}",
-                        )
-                        slide["image_source_mode"] = chosen_src
-
-                        place_opts = ["left", "right"]
-                        cur_place = img_obj.get("placement", "left")
-                        new_place = st.selectbox(
-                            "Image Placement on Slide",
-                            options=place_opts,
-                            index=place_opts.index(cur_place) if cur_place in place_opts else 0,
-                            key=f"imgplace_{idx}",
-                        )
-
-                        new_kw = st.text_input(
-                            "Unsplash Search Keywords (English)",
-                            value=img_obj.get("search_keywords", ""),
-                            key=f"ukw_{idx}",
-                        )
-                        new_vprompt = st.text_area(
-                            "AI Illustration Prompt (English)",
-                            value=img_obj.get("visual_prompt", ""),
-                            height=75,
-                            key=f"vprompt_{idx}",
-                        )
-
-                        if chosen_src == "Use Image from Report" and report_imgs:
-                            rep_labels = [f"[{i}] {r['name']}" for i, r in enumerate(report_imgs)]
-                            sel_rep = st.selectbox(
-                                "Select Extracted Report Image",
-                                options=range(len(report_imgs)),
-                                format_func=lambda x: rep_labels[x],
-                                key=f"repimg_{idx}",
-                            )
-                            slide["selected_report_image_idx"] = sel_rep
-
-                        if chosen_src == "Upload Custom Image":
-                            up_custom_img = st.file_uploader(
-                                "Upload Slide Image (.png, .jpg, .webp)",
-                                type=["png", "jpg", "jpeg", "webp"],
-                                key=f"upimg_{idx}",
-                            )
-                            if up_custom_img is not None:
-                                slide["custom_uploaded_image_bytes"] = up_custom_img.getvalue()
-
-                    with ic2:
-                        style_opts = [VisualStyle.STOCK_PHOTO.value, VisualStyle.AI_ILLUSTRATION.value]
-                        new_pref_style = st.selectbox(
-                            "Smart Hybrid Preferred Style",
-                            options=style_opts,
-                            index=style_opts.index(ai_rec_style) if ai_rec_style in style_opts else 1,
-                            key=f"prefstyle_{idx}",
-                            help="In 'Smart Hybrid (Auto)' mode, 'stock_photo' queries Unsplash first (then falls back to AI), while 'ai_illustration' generates a custom graphic directly.",
-                        )
-                        new_caption = st.text_input(
-                            "Image Caption",
-                            value=img_obj.get("caption", ""),
-                            key=f"imgcap_{idx}",
-                        )
-                        raw_i_pts = st.text_area(
-                            "Accompanying Key Points (`Heading :: Detail`)",
-                            value=format_points_for_editor(slide.get("points", [])),
-                            height=135,
-                            key=f"ipts_{idx}",
-                        )
-                        slide["points"] = parse_points_from_editor(raw_i_pts)
-
-                    slide["image"] = {
-                        "preferred_style": new_pref_style,
-                        "visual_prompt": new_vprompt,
-                        "search_keywords": new_kw,
-                        "caption": new_caption,
-                        "placement": new_place,
-                    }
-
-                # Bottom Takeaway Editor for all content layouts
-                if new_layout not in (LayoutType.COVER.value, LayoutType.SECTION_DIVIDER.value):
-                    slide["bottom_takeaway"] = st.text_input(
-                        "💡 Bottom Takeaway Banner ('So What?')",
-                        value=slide.get("bottom_takeaway") or "",
-                        key=f"takeaway_{idx}",
+            elif new_layout == LayoutType.CHART_SLIDE.value:
+                chart_obj = slide.get("chart") or {}
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    c_types = [ct.value for ct in ChartType]
+                    cur_ct = chart_obj.get("chart_type", "bar")
+                    new_ct = st.selectbox(
+                        "Chart Type",
+                        options=c_types,
+                        index=c_types.index(cur_ct) if cur_ct in c_types else 0,
+                        key=f"{kp}ctype_{idx}",
+                    )
+                    new_ctitle = st.text_input("Chart Title", value=chart_obj.get("chart_title", ""), key=f"{kp}ctitle_{idx}")
+                    new_sname = st.text_input("Series Name & Unit", value=chart_obj.get("series_name", "Value"), key=f"{kp}csname_{idx}")
+                with cc2:
+                    cats_str = st.text_input(
+                        "Categories (comma-separated)",
+                        value=", ".join(chart_obj.get("categories", ["Q1", "Q2", "Q3"])),
+                        key=f"{kp}ccats_{idx}",
+                    )
+                    vals_str = st.text_input(
+                        "Values (comma-separated numbers)",
+                        value=", ".join(str(v) for v in chart_obj.get("values", [10.0, 20.0, 30.0])),
+                        key=f"{kp}cvals_{idx}",
                     )
 
-                updated_slides.append(slide)
-
-        st.session_state.slides_editor_data = updated_slides
-
-        # Step 3: Render & Download
-        st.divider()
-        st.header("Step 3: Render Visual PowerPoint (.pptx)")
-
-        if st.button("🚀 Render Complete Presentation (.pptx)", type="primary", use_container_width=True):
-            if template_mode == "Upload Custom .pptx Template" and uploaded_template is None:
-                st.error("Please upload a .pptx template file in the sidebar, or switch to 'Built-in 16:9 Color Theme'.")
-            else:
-                with st.spinner("Rendering layouts, native charts, and Smart Hybrid visuals into PowerPoint..."):
+                parsed_cats = [c.strip() for c in cats_str.split(",") if c.strip()]
+                parsed_vals = []
+                for v in vals_str.split(","):
                     try:
-                        tpl_bytes = uploaded_template.getvalue() if uploaded_template else None
-                        st.session_state.pptx_bytes = build_presentation_pptx(
-                            slides_data=st.session_state.slides_editor_data,
-                            theme_name=selected_theme,
-                            gemini_api_key=gemini_img_key,
-                            use_imagen=use_imagen,
-                            unsplash_access_key=unsplash_key,
-                            extracted_report_images=st.session_state.extracted_report_images,
-                            custom_template_bytes=tpl_bytes,
-                        )
-                        st.success("Presentation rendered successfully! Click below to download.")
-                    except Exception as e:
-                        st.error(f"Error rendering PPTX: {e}")
+                        parsed_vals.append(float(v.strip()))
+                    except ValueError:
+                        pass
+                if not parsed_cats or not parsed_vals:
+                    parsed_cats, parsed_vals = ["Item 1", "Item 2"], [50.0, 80.0]
 
-        if st.session_state.pptx_bytes:
-            st.download_button(
-                label="📥 Download ChatPPT_V2_Presentation.pptx",
-                data=st.session_state.pptx_bytes,
-                file_name="ChatPPT_V2_Presentation.pptx",
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                use_container_width=True,
+                slide["chart"] = {
+                    "chart_type": new_ct,
+                    "chart_title": new_ctitle,
+                    "series_name": new_sname,
+                    "categories": parsed_cats,
+                    "values": parsed_vals,
+                }
+
+                raw_c_pts = st.text_area(
+                    "Right-Side Chart Commentary (`Heading :: Detail`)",
+                    value=format_points_for_editor(slide.get("points", [])),
+                    height=100,
+                    key=f"{kp}cpts_{idx}",
+                )
+                slide["points"] = parse_points_from_editor(raw_c_pts)
+
+            elif new_layout == LayoutType.IMAGE_SPLIT.value:
+                img_obj = slide.get("image") or {}
+                ai_rec_style = img_obj.get("preferred_style", VisualStyle.AI_ILLUSTRATION.value)
+                ic1, ic2 = st.columns(2)
+
+                with ic1:
+                    src_choices = [
+                        "Smart Hybrid (Auto)",
+                        "Unsplash Stock Photo",
+                        "AI Generated Illustration",
+                        "Upload Custom Image",
+                        "Visual Placeholder Only",
+                    ]
+                    if report_imgs:
+                        src_choices.insert(1, "Use Image from Report")
+
+                    cur_src = slide.get("image_source_mode", "Smart Hybrid (Auto)")
+                    if cur_src not in src_choices:
+                        cur_src = src_choices[0]
+
+                    chosen_src = st.selectbox(
+                        f"Image Source (AI Auto-Recommendation: `{ai_rec_style}`)",
+                        options=src_choices,
+                        index=src_choices.index(cur_src),
+                        key=f"{kp}imgsrc_{idx}",
+                    )
+                    slide["image_source_mode"] = chosen_src
+
+                    place_opts = ["left", "right"]
+                    cur_place = img_obj.get("placement", "left")
+                    new_place = st.selectbox(
+                        "Image Placement on Slide",
+                        options=place_opts,
+                        index=place_opts.index(cur_place) if cur_place in place_opts else 0,
+                        key=f"{kp}imgplace_{idx}",
+                    )
+
+                    new_kw = st.text_input(
+                        "Unsplash Search Keywords (English)",
+                        value=img_obj.get("search_keywords", ""),
+                        key=f"{kp}ukw_{idx}",
+                    )
+                    new_vprompt = st.text_area(
+                        "AI Illustration Prompt (English)",
+                        value=img_obj.get("visual_prompt", ""),
+                        height=75,
+                        key=f"{kp}vprompt_{idx}",
+                    )
+
+                    if chosen_src == "Use Image from Report" and report_imgs:
+                        rep_labels = [f"[{i}] {r['name']}" for i, r in enumerate(report_imgs)]
+                        sel_rep = st.selectbox(
+                            "Select Extracted Report Image",
+                            options=range(len(report_imgs)),
+                            format_func=lambda x: rep_labels[x],
+                            key=f"{kp}repimg_{idx}",
+                        )
+                        slide["selected_report_image_idx"] = sel_rep
+
+                    if chosen_src == "Upload Custom Image":
+                        up_custom_img = st.file_uploader(
+                            "Upload Slide Image (.png, .jpg, .webp)",
+                            type=["png", "jpg", "jpeg", "webp"],
+                            key=f"{kp}upimg_{idx}",
+                        )
+                        if up_custom_img is not None:
+                            slide["custom_uploaded_image_bytes"] = up_custom_img.getvalue()
+
+                with ic2:
+                    style_opts = [VisualStyle.STOCK_PHOTO.value, VisualStyle.AI_ILLUSTRATION.value]
+                    new_pref_style = st.selectbox(
+                        "Smart Hybrid Preferred Style",
+                        options=style_opts,
+                        index=style_opts.index(ai_rec_style) if ai_rec_style in style_opts else 1,
+                        key=f"{kp}prefstyle_{idx}",
+                        help="In 'Smart Hybrid (Auto)' mode, 'stock_photo' queries Unsplash first (then falls back to AI), while 'ai_illustration' generates a custom graphic directly.",
+                    )
+                    new_caption = st.text_input(
+                        "Image Caption",
+                        value=img_obj.get("caption", ""),
+                        key=f"{kp}imgcap_{idx}",
+                    )
+                    raw_i_pts = st.text_area(
+                        "Accompanying Key Points (`Heading :: Detail`)",
+                        value=format_points_for_editor(slide.get("points", [])),
+                        height=135,
+                        key=f"{kp}ipts_{idx}",
+                    )
+                    slide["points"] = parse_points_from_editor(raw_i_pts)
+
+                slide["image"] = {
+                    "preferred_style": new_pref_style,
+                    "visual_prompt": new_vprompt,
+                    "search_keywords": new_kw,
+                    "caption": new_caption,
+                    "placement": new_place,
+                }
+
+            # Bottom Takeaway Editor for all content layouts
+            if new_layout not in (LayoutType.COVER.value, LayoutType.SECTION_DIVIDER.value):
+                slide["bottom_takeaway"] = st.text_input(
+                    "💡 Bottom Takeaway Banner ('So What?')",
+                    value=slide.get("bottom_takeaway") or "",
+                    key=f"{kp}takeaway_{idx}",
+                )
+
+            updated_slides.append(slide)
+
+    chat["slides"] = updated_slides
+
+
+def render_export_block(chat: dict) -> None:
+    ss = st.session_state
+    s = ss.settings
+    cid = chat["id"]
+
+    st.markdown("**Export**")
+    st.caption(
+        "Template and color palette are chosen in the 🎨 button of the message box. "
+        "Send a short message below (e.g. “make it 6 slides with more charts”) to regenerate from the same source."
+    )
+    if st.button("🚀 Render presentation (.pptx)", type="primary", use_container_width=True, key=f"render_{cid}"):
+        use_custom_tpl = ss.get("opt_tpl_mode") == "Custom .pptx template"
+        tpl_file = ss.get("opt_tpl_file")
+        if use_custom_tpl and tpl_file is None:
+            st.error("Upload a .pptx template in the 🎨 menu, or switch to a built-in theme.")
+        else:
+            with st.spinner("Rendering layouts, native charts and visuals into PowerPoint..."):
+                try:
+                    chat["pptx_bytes"] = build_presentation_pptx(
+                        slides_data=chat["slides"],
+                        theme_name=ss.get("opt_theme", list(BUILTIN_THEMES.keys())[0]),
+                        gemini_api_key=s["api_keys"].get("Google Gemini"),
+                        use_imagen=s["use_imagen"],
+                        unsplash_access_key=s["unsplash_key"],
+                        extracted_report_images=chat["report_images"],
+                        custom_template_bytes=tpl_file.getvalue() if (use_custom_tpl and tpl_file) else None,
+                    )
+                    st.success("Presentation rendered! Download it below.")
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Error rendering PPTX: {e}")
+
+    if chat["pptx_bytes"]:
+        st.download_button(
+            "📥 Download ChatPPT_V2_Presentation.pptx",
+            data=chat["pptx_bytes"],
+            file_name="ChatPPT_V2_Presentation.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            use_container_width=True,
+            key=f"dl_{cid}_{chat['gen']}",
+        )
+
+
+def render_deck_block(chat: dict) -> None:
+    with st.chat_message("assistant", avatar="📊"):
+        st.markdown("**Slide outline** — expand any slide to edit it, then render the deck.")
+        render_outline_editor(chat)
+        st.divider()
+        render_export_block(chat)
+
+
+# ---------------------------------------------------------------------
+# Composer (message box with upload / template / tone / model controls)
+# ---------------------------------------------------------------------
+
+def _short(text: str, n: int = 16) -> str:
+    text = (text or "").split("/")[-1]
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def get_model_options(provider: str, api_key: str, base_url: str, static_models: List[str]):
+    """Live model list with a 60s negative cache so a failing network doesn't slow every rerun."""
+    fails = st.session_state.setdefault("model_fetch_fail", {})
+    sig = (provider, hash(api_key), base_url)
+    if fails.get(sig, 0) > time.time():
+        return static_models, "Live list unavailable right now; showing presets."
+    options, status = resolve_model_options(provider, api_key, base_url, static_models)
+    if status.startswith("Could not fetch"):
+        fails[sig] = time.time() + 60
+    return options, status
+
+
+def render_model_picker() -> dict:
+    """Provider + model selectors (rendered inside a popover). Returns the active model config."""
+    s = st.session_state.settings
+    provider = st.selectbox("Provider", list(LLM_PROVIDERS.keys()), key="opt_provider")
+    cfg = LLM_PROVIDERS[provider]
+    api_key = (s["api_keys"].get(provider) or "").strip()
+    base_url = (s["custom_base_url"] if provider == CUSTOM_PROVIDER else cfg["base_url"]) or ""
+
+    if not api_key:
+        st.warning("No API key for this provider yet. Open ⚙️ Settings in the sidebar.")
+
+    options, status = get_model_options(provider, api_key, base_url, cfg["models"])
+    choice = st.selectbox("Model", options, key=f"opt_model_{provider}")
+    st.caption(status)
+    if st.button("🔄 Refresh model list", key="refresh_models"):
+        fetch_live_models.clear()
+        st.session_state.pop("model_fetch_fail", None)
+        st.rerun()
+
+    if choice == "Custom Model ID...":
+        default_custom = "gemini-3.8-flash" if provider == "Google Gemini" else "gpt-4o-mini"
+        model = st.text_input("Custom model ID", value=default_custom, key=f"opt_custom_model_{provider}").strip()
+    else:
+        model = choice
+    return {"provider": provider, "api_key": api_key, "base_url": base_url, "model": model}
+
+
+def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, language: str, num_slides: int) -> None:
+    """Validate the message, extract source text/images, and queue a generation job."""
+    text = (text or "").strip()
+    if not text and report is None:
+        st.toast("Attach a report or paste some text first.", icon="⚠️")
+        return
+    if not model_cfg["api_key"]:
+        st.toast(f"Add your {model_cfg['provider']} API key first.", icon="🔑")
+        settings_dialog()
+        return
+
+    is_revision = (
+        report is None and bool(chat["slides"]) and bool(chat["source_text"]) and len(text) <= REVISION_MAX_CHARS
+    )
+
+    if is_revision:
+        source_for_llm = (
+            chat["source_text"]
+            + "\n\nUser revision instructions (apply these when designing the deck): "
+            + text
+        )
+    else:
+        with st.spinner("Reading your file..."):
+            file_text = extract_text_from_uploaded_file(report) if report is not None else ""
+            chat["report_images"] = extract_images_from_report(report) if report is not None else []
+        source = "\n\n".join(filter(None, [file_text.strip(), text]))
+        if not source:
+            st.toast("Couldn't read any text from that file.", icon="⚠️")
+            return
+        chat["source_text"] = source
+        source_for_llm = source
+
+    if not chat["messages"]:
+        chat["title"] = (report.name if report is not None else text.split("\n")[0])[:40] or "New chat"
+
+    meta = f"{num_slides} slides · {language} · {_short(model_cfg['provider'], 12)} / {_short(model_cfg['model'], 24)}"
+    shown = text if len(text) <= 500 else text[:500] + f"… ({len(text):,} characters)"
+    if is_revision:
+        shown = f"✏️ {shown}"
+    chat["messages"].append(
+        {
+            "role": "user",
+            "content": shown,
+            "attachment": report.name if report is not None else None,
+            "meta": meta,
+        }
+    )
+    chat["pending"] = {
+        "provider": model_cfg["provider"],
+        "api_key": model_cfg["api_key"],
+        "model": model_cfg["model"],
+        "base_url": model_cfg["base_url"] if model_cfg["provider"] == CUSTOM_PROVIDER else None,
+        "source_text": source_for_llm,
+        "num_slides": num_slides,
+        "tone": tone,
+        "language": language,
+    }
+    chat["composer_ver"] += 1  # new widget keys => text box and file uploader reset
+    st.rerun()
+
+
+def render_composer(chat: dict) -> None:
+    ss = st.session_state
+    cid, ver = chat["id"], chat["composer_ver"]
+    text_key, file_key = f"composer_text_{cid}_{ver}", f"composer_file_{cid}_{ver}"
+    busy = chat["pending"] is not None
+
+    # Labels are derived from last-run widget state so popover buttons reflect current choices
+    attached = ss.get(file_key)
+    prov_name = ss.get("opt_provider", list(LLM_PROVIDERS.keys())[0])
+    model_state = ss.get(f"opt_model_{prov_name}")
+    if model_state == "Custom Model ID...":
+        model_state = ss.get(f"opt_custom_model_{prov_name}")
+    tpl_label = "🎨 Custom .pptx" if ss.get("opt_tpl_mode") == "Custom .pptx template" else f"🎨 {_short(ss.get('opt_theme', 'Theme'), 14)}"
+
+    with st.container(key="composer_dock"):
+        with st.container(key="composer"):
+            text = st.text_area(
+                "Message",
+                key=text_key,
+                height=90,
+                placeholder=(
+                    "Paste your report or notes here… "
+                    if not chat["slides"]
+                    else "Ask for changes, e.g. “make it 6 slides and add more charts”… "
+                ),
+                label_visibility="collapsed",
+                disabled=busy,
             )
+            c_file, c_tpl, c_tone, c_model, c_deck, c_send = st.columns(
+                [1.15, 1.2, 1.55, 1.45, 1.35, 1.0], vertical_alignment="center"
+            )
+
+            with c_file.popover(f"📎 {_short(attached.name, 12)}" if attached else "📎 Attach", use_container_width=True):
+                report = st.file_uploader(
+                    "Report file",
+                    type=["pdf", "docx", "txt", "md"],
+                    key=file_key,
+                    help="Embedded images in PDF/DOCX files are extracted automatically.",
+                )
+                st.caption("PDF · DOCX · TXT · MD — embedded figures can be reused on slides.")
+
+            with c_tpl.popover(tpl_label, use_container_width=True):
+                st.radio("Styling", ["Built-in 16:9 theme", "Custom .pptx template"], key="opt_tpl_mode")
+                st.selectbox("Color palette", list(BUILTIN_THEMES.keys()), key="opt_theme")
+                if ss.get("opt_tpl_mode") == "Custom .pptx template":
+                    st.file_uploader(
+                        "Upload .pptx template",
+                        type=["pptx"],
+                        key="opt_tpl_file",
+                        help="Keeps your Slide Master background; the palette is used for cards and charts.",
+                    )
+
+            tone_label = c_tone.selectbox(
+                "Tone", list(TONE_OPTIONS.keys()), key="opt_tone", label_visibility="collapsed"
+            )
+
+            with c_model.popover(f"🤖 {_short(model_state or 'Model', 14)}", use_container_width=True):
+                model_cfg = render_model_picker()
+
+            with c_deck.popover(
+                f"⚙ {ss.get('opt_slides', 8)} slides", use_container_width=True
+            ):
+                num_slides = st.slider("Number of slides", 4, 20, 8, key="opt_slides")
+                language = st.selectbox("Output language", LANGUAGE_OPTIONS, key="opt_language")
+
+            send = c_send.button(
+                "Generate ➤", type="primary", use_container_width=True, key=f"send_{cid}", disabled=busy
+            )
+
+    if send:
+        handle_send(
+            chat,
+            text,
+            report,
+            model_cfg,
+            TONE_OPTIONS[tone_label],
+            ss.get("opt_language", "English"),
+            int(ss.get("opt_slides", 8)),
+        )
+
+
+def run_pending(chat: dict, container) -> None:
+    """Run the queued outline generation inside the chat area, then rerun to show the result."""
+    p = chat["pending"]
+    with container:
+        with st.chat_message("assistant", avatar="📊"):
+            with st.spinner(f"Designing your deck with {p['provider']} · {p['model']}…"):
+                try:
+                    slides = generate_smart_outline(
+                        provider=p["provider"],
+                        api_key=p["api_key"],
+                        source_text=p["source_text"],
+                        num_slides=p["num_slides"],
+                        tone=p["tone"],
+                        language=p["language"],
+                        model_name=p["model"],
+                        custom_base_url=p["base_url"],
+                    )
+                    chat["slides"] = slides
+                    chat["gen"] += 1
+                    chat["pptx_bytes"] = None
+                    if slides and slides[0].get("action_title"):
+                        chat["title"] = slides[0]["action_title"][:40]
+                    n_img = len(chat["report_images"])
+                    note = f" Found {n_img} embedded image(s) in your file." if n_img else ""
+                    chat["messages"].append(
+                        {
+                            "role": "assistant",
+                            "content": f"Your outline is ready — **{len(slides)} slides**.{note} "
+                            "Review and tweak it below, then render the .pptx.",
+                        }
+                    )
+                except Exception as e:  # noqa: BLE001
+                    err = str(e)
+                    err = err if len(err) <= 1200 else err[:1200] + "…"
+                    chat["messages"].append(
+                        {"role": "assistant", "content": f"❌ I couldn't generate the outline.\n\n```\n{err}\n```"}
+                    )
+                chat["pending"] = None
+    st.rerun()
+
+
+# ---------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------
+
+def main():
+    st.set_page_config(
+        page_title="ChatPPT V2",
+        page_icon="📊",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    init_state()
+    chat = st.session_state.chats[st.session_state.active_chat]
+    inject_css(chat["id"])
+    render_sidebar()
+
+    chat_area = st.container()
+    with chat_area:
+        if not chat["messages"] and chat["pending"] is None:
+            render_hero()
+        render_messages(chat)
+        if chat["slides"] and chat["pending"] is None:
+            render_deck_block(chat)
+
+    render_composer(chat)
+
+    if chat["pending"] is not None:
+        run_pending(chat, chat_area)
 
 
 if __name__ == "__main__":
