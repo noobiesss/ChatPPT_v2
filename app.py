@@ -7,7 +7,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from enum import Enum
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import streamlit as st
 from PIL import Image
@@ -745,36 +745,29 @@ def sanitize_outline_dict(outline: PresentationOutline) -> List[dict]:
     return sanitized_slides
 
 
-def generate_smart_outline(
+# Extra attempts when the model returns a different number of slides than requested
+OUTLINE_COUNT_MAX_RETRIES = 2
+
+# Matches slide-count mentions in free-text revision notes, e.g. "6 slides", "add 2 more pages", "8页"
+_SLIDE_COUNT_MENTION_RE = re.compile(
+    r"\d+\s*(?:more\s+|extra\s+|additional\s+|new\s+)?(?:slides?|pages?)|\d+\s*[\u9875\u9801\u5f20\u5f35]",
+    re.IGNORECASE,
+)
+
+
+def mentions_slide_count(text: str) -> bool:
+    """Return True if a revision instruction itself talks about a slide/page count."""
+    return bool(_SLIDE_COUNT_MENTION_RE.search(text or ""))
+
+
+def _request_outline(
     provider: str,
     api_key: str,
-    source_text: str,
-    num_slides: int,
-    tone: str,
-    language: str,
     model_name: str,
-    custom_base_url: Optional[str] = None,
-) -> List[dict]:
-    """
-    Multi-Provider Outline Generator:
-    Routes request to either Google Gemini SDK or any OpenAI-Compatible endpoint (Groq, OpenAI, DeepSeek, etc.)
-    and validates the returned JSON against PresentationOutline.
-    """
-    user_prompt = f"""
-    Create a {num_slides}-slide presentation outline based on the source document below.
-
-    Target Specifications:
-    - Total Slides: Exactly {num_slides} slides (Slide 1 MUST be 'cover').
-    - Presentation Tone: {tone}.
-    - Output Language: {language} (Write all titles, headings, details, chart labels, captions, and takeaways in {language};
-      keep ONLY `visual_prompt` and `search_keywords` in English).
-
-    Source Document:
-    \"\"\"
-    {source_text}
-    \"\"\"
-    """
-
+    user_prompt: str,
+    custom_base_url: Optional[str],
+) -> PresentationOutline:
+    """Send one outline request to the selected provider and return the validated outline."""
     if provider == "Google Gemini":
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
@@ -797,9 +790,127 @@ def generate_smart_outline(
             system_prompt=SYSTEM_INSTRUCTION,
             user_prompt=user_prompt,
         )
+    return PresentationOutline.model_validate_json(repair_json_str(raw_json))
 
-    parsed_outline = PresentationOutline.model_validate_json(repair_json_str(raw_json))
-    return sanitize_outline_dict(parsed_outline)
+
+def _build_count_correction(outline: PresentationOutline, num_slides: int) -> str:
+    """Build a corrective note that tells the model exactly how its previous outline missed the target."""
+    got = len(outline.slides)
+    titles = "\n".join(f"  {i + 1}. {s.action_title}" for i, s in enumerate(outline.slides))
+    if got < num_slides:
+        fix = f"Add {num_slides - got} more slide(s) covering other important parts of the source document."
+    else:
+        fix = f"Merge or remove {got - num_slides} slide(s), keeping the most important content."
+    return (
+        "\n\nCORRECTION REQUIRED: your previous answer contained "
+        f"{got} slides, but EXACTLY {num_slides} slides are required.\n"
+        f"Previous slide titles:\n{titles}\n"
+        f"{fix} Return the COMPLETE outline again (not only the changes) with exactly {num_slides} "
+        "objects in the `slides` array. Keep every text field short so the answer is not cut off."
+    )
+
+
+def _trim_slides_to_count(slides: List[SlideSpec], target: int) -> List[SlideSpec]:
+    """
+    Deterministically shorten an over-long deck: drop section dividers first (never the cover),
+    then drop slides right before the closing slide so the cover and the conclusion survive.
+    """
+    trimmed = list(slides)
+    for idx in range(len(trimmed) - 1, 0, -1):
+        if len(trimmed) <= target:
+            break
+        if trimmed[idx].layout_type == LayoutType.SECTION_DIVIDER:
+            del trimmed[idx]
+    while len(trimmed) > target and len(trimmed) > 2:
+        del trimmed[-2]
+    return trimmed
+
+
+def generate_smart_outline(
+    provider: str,
+    api_key: str,
+    source_text: str,
+    num_slides: int,
+    tone: str,
+    language: str,
+    model_name: str,
+    custom_base_url: Optional[str] = None,
+    enforce_count: bool = True,
+) -> Tuple[List[dict], Optional[str]]:
+    """
+    Multi-Provider Outline Generator:
+    Routes request to either Google Gemini SDK or any OpenAI-Compatible endpoint (Groq, OpenAI, DeepSeek, etc.)
+    and validates the returned JSON against PresentationOutline.
+
+    When enforce_count is True the slide count is verified: the model is asked again (up to
+    OUTLINE_COUNT_MAX_RETRIES times) if it misses the target, and an over-long result is trimmed.
+    Returns (slides, warning). `warning` is a user-facing note if the final count still differs
+    from the request, otherwise None.
+    """
+    if enforce_count:
+        count_rule = (
+            f"- Total Slides: Exactly {num_slides} slides (Slide 1 MUST be 'cover'). "
+            f"The `slides` array MUST contain exactly {num_slides} objects numbered 1 to {num_slides}; "
+            "count them before you answer."
+        )
+    else:
+        count_rule = (
+            "- Total Slides: if the revision notes at the end of the source document ask for a specific "
+            f"slide count, follow them; otherwise use {num_slides} slides. Slide 1 MUST be 'cover'."
+        )
+
+    base_prompt = f"""
+    Create a {num_slides}-slide presentation outline based on the source document below.
+
+    Target Specifications:
+    {count_rule}
+    - Presentation Tone: {tone}.
+    - Output Language: {language} (Write all titles, headings, details, chart labels, captions, and takeaways in {language};
+      keep ONLY `visual_prompt` and `search_keywords` in English).
+
+    Source Document:
+    \"\"\"
+    {source_text}
+    \"\"\"
+    """
+
+    outline = _request_outline(provider, api_key, model_name, base_prompt, custom_base_url)
+    warning: Optional[str] = None
+
+    if enforce_count and len(outline.slides) != num_slides:
+        best = outline
+        current = outline
+        for _ in range(OUTLINE_COUNT_MAX_RETRIES):
+            try:
+                current = _request_outline(
+                    provider,
+                    api_key,
+                    model_name,
+                    base_prompt + _build_count_correction(current, num_slides),
+                    custom_base_url,
+                )
+            except Exception:  # noqa: BLE001 - keep the best earlier result instead of failing the whole job
+                break
+            if abs(len(current.slides) - num_slides) < abs(len(best.slides) - num_slides):
+                best = current
+            if len(current.slides) == num_slides:
+                break
+        outline = best
+
+        got = len(outline.slides)
+        if got > num_slides:
+            outline = outline.model_copy(update={"slides": _trim_slides_to_count(outline.slides, num_slides)})
+            warning = (
+                f"The model kept returning {got} slides, so I trimmed the deck to the requested "
+                f"{num_slides} (section dividers and middle slides were dropped first)."
+            )
+        elif got < num_slides:
+            warning = (
+                f"The model returned only {got} of the {num_slides} requested slides, even after retrying. "
+                "Try a larger model, or ask for more with a follow-up such as “add 2 more slides”."
+            )
+
+    return sanitize_outline_dict(outline), warning
 
 
 # =====================================================================
@@ -2281,7 +2392,10 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
     if not chat["messages"]:
         chat["title"] = (report.name if report is not None else text.split("\n")[0])[:40] or "New chat"
 
-    meta = f"{num_slides} slides · {language} · {_short(model_cfg['provider'], 12)} / {_short(model_cfg['model'], 24)}"
+    # A revision that itself mentions a slide count (e.g. "make it 6 slides") overrides the slider
+    enforce_count = not (is_revision and mentions_slide_count(text))
+    slide_label = f"{num_slides} slides" if enforce_count else "slide count per your request"
+    meta = f"{slide_label} · {language} · {_short(model_cfg['provider'], 12)} / {_short(model_cfg['model'], 24)}"
     shown = text if len(text) <= 500 else text[:500] + f"… ({len(text):,} characters)"
     if is_revision:
         shown = f"✏️ {shown}"
@@ -2300,6 +2414,7 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
         "base_url": model_cfg["base_url"] if model_cfg["provider"] == CUSTOM_PROVIDER else None,
         "source_text": source_for_llm,
         "num_slides": num_slides,
+        "enforce_count": enforce_count,
         "tone": tone,
         "language": language,
     }
@@ -2395,7 +2510,7 @@ def run_pending(chat: dict, container) -> None:
         with st.chat_message("assistant", avatar="📊"):
             with st.spinner(f"Designing your deck with {p['provider']} · {p['model']}…"):
                 try:
-                    slides = generate_smart_outline(
+                    slides, count_warning = generate_smart_outline(
                         provider=p["provider"],
                         api_key=p["api_key"],
                         source_text=p["source_text"],
@@ -2404,6 +2519,7 @@ def run_pending(chat: dict, container) -> None:
                         language=p["language"],
                         model_name=p["model"],
                         custom_base_url=p["base_url"],
+                        enforce_count=p.get("enforce_count", True),
                     )
                     chat["slides"] = slides
                     chat["gen"] += 1
@@ -2412,6 +2528,8 @@ def run_pending(chat: dict, container) -> None:
                         chat["title"] = slides[0]["action_title"][:40]
                     n_img = len(chat["report_images"])
                     note = f" Found {n_img} embedded image(s) in your file." if n_img else ""
+                    if count_warning:
+                        note += f"\n\n⚠️ {count_warning}"
                     chat["messages"].append(
                         {
                             "role": "assistant",
