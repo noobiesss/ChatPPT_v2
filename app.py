@@ -1241,12 +1241,17 @@ def _sample_slide_colors_and_fonts(prs: Presentation) -> Dict[str, object]:
         "content_bg": None,
         "accent": None,
         "font": None,
+        "font_heading": None,
+        "font_body": None,
     }
     try:
         slide_w = float(prs.slide_width or Inches(13.333))
         slide_h = float(prs.slide_height or Inches(7.5))
         slide_area = max(slide_w * slide_h, 1.0)
 
+        n_slides = len(prs.slides)
+        font_runs_slides: List[Tuple[str, float]] = []
+        font_runs_other: List[Tuple[str, float]] = []
         containers = list(prs.slides) + list(prs.slide_layouts) + list(prs.slide_masters)
         for s_idx, container in enumerate(containers):
             c_sld = container._element.find(f"{_NS_P}cSld")
@@ -1279,15 +1284,35 @@ def _sample_slide_colors_and_fonts(prs: Presentation) -> Dict[str, object]:
                             if spread >= 35 and 25 < lum < 235 and info["accent"] is None:
                                 info["accent"] = fill_rgb
 
-                    if info["font"] is None and getattr(shape, "has_text_frame", False):
+                    if getattr(shape, "has_text_frame", False):
                         for para in shape.text_frame.paragraphs:
                             for run in para.runs:
                                 fname = (run.font.name or "").strip()
-                                if fname and not fname.startswith("+"):
-                                    info["font"] = fname
-                                    break
+                                if not fname or fname.startswith("+") or not (run.text or "").strip():
+                                    continue
+                                size_pt = float(run.font.size.pt) if run.font.size else 0.0
+                                bucket = font_runs_slides if s_idx < n_slides else font_runs_other
+                                bucket.append((fname, size_pt))
                 except Exception:
                     continue
+
+        # Fonts that are really used on the sample slides win over theme1.xml: Canva / Slidesgo
+        # templates often leave theme fonts at defaults and set the visible fonts on each run.
+        from collections import Counter
+        runs = font_runs_slides or font_runs_other
+        if runs:
+            sized = [r for r in runs if r[1] > 0]
+            heading = None
+            if sized:
+                biggest = max(sized, key=lambda r: r[1])
+                if biggest[1] >= 18:
+                    heading = biggest[0]
+            small = [name for name, size in runs if size < 18]
+            body = Counter(small).most_common(1)[0][0] if small else None
+            overall = Counter(name for name, _ in runs).most_common(1)[0][0]
+            info["font_heading"] = heading or body or overall
+            info["font_body"] = body or heading or overall
+            info["font"] = info["font_heading"]
     except Exception:
         pass
     return info
@@ -1306,8 +1331,8 @@ def extract_template_style(
     scheme_colors, font_heading, font_body = _parse_theme_xml_colors_and_fonts(prs)
     sampled = _sample_slide_colors_and_fonts(prs)
 
-    resolved_heading = font_heading or sampled.get("font")
-    resolved_body = font_body or resolved_heading
+    resolved_heading = sampled.get("font_heading") or font_heading or sampled.get("font")
+    resolved_body = sampled.get("font_body") or font_body or resolved_heading
     base_theme["font_heading"] = resolved_heading
     base_theme["font_body"] = resolved_body
 
@@ -1458,6 +1483,22 @@ def _scale_template_to_widescreen(prs: Presentation, target_w_in: float = 13.333
     prs.slide_height = target_h
 
 
+def _has_visible_fill(shape) -> bool:
+    """True for pictures and for shapes with an explicit solid/gradient/picture/pattern fill (not outline-only)."""
+    try:
+        if hasattr(shape, "image"):
+            return True
+    except Exception:
+        pass
+    try:
+        sp_pr = shape._element.find(f"{_NS_P}spPr")
+    except Exception:
+        return False
+    if sp_pr is None or sp_pr.find(f"{_NS_A}noFill") is not None:
+        return False
+    return any(sp_pr.find(f"{_NS_A}{tag}") is not None for tag in ("solidFill", "gradFill", "blipFill", "pattFill"))
+
+
 def _is_full_bleed_background_shape(shape, slide_w_emu: int, slide_h_emu: int) -> bool:
     """
     Return True only if a shape on a sample template slide acts as the slide BACKGROUND:
@@ -1482,7 +1523,34 @@ def _is_full_bleed_background_shape(shape, slide_w_emu: int, slide_h_emu: int) -
     if width <= 0 or height <= 0 or slide_w_emu <= 0 or slide_h_emu <= 0:
         return False
 
+    if not _has_visible_fill(shape):
+        # Outline-only rectangles / groups are border frames, not backgrounds.
+        return False
+
     return width >= int(slide_w_emu * 0.92) and height >= int(slide_h_emu * 0.92)
+
+
+def _strip_template_decorations(prs: Presentation) -> None:
+    """
+    Remove non-placeholder decorations (border frames, lines, logos, ornaments, text labels) from every
+    slide layout and the slide master. Only placeholders and full-bleed filled/picture backgrounds stay,
+    so master/layout artwork cannot collide with the generated content (same rule as sample slides).
+    """
+    slide_w_emu = int(prs.slide_width or Inches(13.333))
+    slide_h_emu = int(prs.slide_height or Inches(7.5))
+    for container in list(prs.slide_layouts) + list(prs.slide_masters):
+        for shape in list(container.shapes):
+            try:
+                if getattr(shape, "is_placeholder", False):
+                    continue
+                if _is_full_bleed_background_shape(shape, slide_w_emu, slide_h_emu):
+                    continue
+                el = shape._element
+                parent = el.getparent()
+                if parent is not None:
+                    parent.remove(el)
+            except Exception:
+                continue
 
 
 def _snapshot_slide_prototype(slide, slide_w_emu: int, slide_h_emu: int) -> dict:
@@ -2219,6 +2287,7 @@ def build_presentation_pptx(
             use_template_colors=use_template_colors,
         )
         prototypes = _capture_template_prototypes(prs)
+        _strip_template_decorations(prs)
         clear_existing_slides(prs)
         apply_solid_bg = False  # Preserve custom template's master, layout, and prototype backgrounds
     else:
