@@ -1138,6 +1138,28 @@ def _blend_rgb(c1: Tuple[int, int, int], c2: Tuple[int, int, int], ratio: float)
     return RGBColor(max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
 
 
+def _relative_luminance(rgb: Tuple[int, int, int]) -> float:
+    """WCAG relative luminance (0..1)."""
+    def _lin(v: int) -> float:
+        c = v / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * _lin(rgb[0]) + 0.7152 * _lin(rgb[1]) + 0.0722 * _lin(rgb[2])
+
+
+def _ensure_white_text_contrast(color: RGBColor, min_ratio: float = 4.5) -> RGBColor:
+    """
+    Darken `color` step by step (toward black, keeping its hue) until white text on it reaches
+    the requested WCAG contrast ratio. Used for the Key Takeaway banner and column headers.
+    """
+    rgb = (color[0], color[1], color[2])
+    for _ in range(30):
+        ratio = 1.05 / (_relative_luminance(rgb) + 0.05)
+        if ratio >= min_ratio:
+            break
+        rgb = (int(rgb[0] * 0.92), int(rgb[1] * 0.92), int(rgb[2] * 0.92))
+    return RGBColor(*rgb)
+
+
 def _parse_theme_xml_colors_and_fonts(prs: Presentation) -> Tuple[Dict[str, Tuple[int, int, int]], Optional[str], Optional[str]]:
     """
     Inspect the Slide Master's Office Theme XML (theme1.xml) to extract scheme colors
@@ -1325,7 +1347,7 @@ def extract_template_style(
         card_border = _blend_rgb(content_bg_tuple, accent_tuple, 0.35)
         title_content = RGBColor(245, 247, 252)
         body_content = RGBColor(200, 206, 220)
-        takeaway_bg = _blend_rgb(content_bg_tuple, accent_tuple, 0.28)
+        takeaway_bg = _ensure_white_text_contrast(_blend_rgb(content_bg_tuple, accent_tuple, 0.28))
         takeaway_text = RGBColor(255, 255, 255)
     else:
         dk_text = scheme_colors.get("dk1") or (22, 33, 48)
@@ -1335,7 +1357,9 @@ def extract_template_style(
         card_border = _blend_rgb((255, 255, 255), accent_tuple, 0.25)
         title_content = RGBColor(*dk_text)
         body_content = _blend_rgb(dk_text, (120, 128, 140), 0.35)
-        takeaway_bg = RGBColor(*dk_text) if _luminance(dk_text) < 95 else _blend_rgb(accent_tuple, (15, 23, 42), 0.45)
+        # Derive the banner from the template accent (not from the near-black body text color) so it
+        # follows the template style; darken only as far as needed for readable white text.
+        takeaway_bg = _ensure_white_text_contrast(_blend_rgb(accent_tuple, (15, 23, 42), 0.30))
         takeaway_text = RGBColor(255, 255, 255)
 
     if cover_is_dark:
@@ -1434,43 +1458,37 @@ def _scale_template_to_widescreen(prs: Presentation, target_w_in: float = 13.333
     prs.slide_height = target_h
 
 
-def _is_decorative_or_branding_shape(shape, slide_h_emu: int) -> bool:
+def _is_full_bleed_background_shape(shape, slide_w_emu: int, slide_h_emu: int) -> bool:
     """
-    Return True if a shape on a sample template slide is part of the visual template
-    (background image, decorative vector graphic, border frame, logo, or small header/footer tag)
-    rather than sample body text.
+    Return True only if a shape on a sample template slide acts as the slide BACKGROUND:
+    a text-free picture or vector shape that covers (nearly) the entire slide canvas.
+
+    Everything else on the sample slide (illustrations, border frames, header/footer widgets,
+    logos, sample text) is deliberately ignored: those elements were positioned for the sample
+    content and collide with generated content, so they are not inherited.
     """
     if getattr(shape, "is_placeholder", False):
         return False
     if getattr(shape, "has_table", False) or getattr(shape, "has_chart", False):
         return False
+    if getattr(shape, "has_text_frame", False) and (shape.text_frame.text or "").strip():
+        return False
 
-    # Pictures without text (background art, corner logos, decorative illustrations)
-    if hasattr(shape, "image"):
-        return True
+    try:
+        width = int(shape.width or 0)
+        height = int(shape.height or 0)
+    except Exception:
+        return False
+    if width <= 0 or height <= 0 or slide_w_emu <= 0 or slide_h_emu <= 0:
+        return False
 
-    if not getattr(shape, "has_text_frame", False):
-        return True
-
-    txt = (shape.text_frame.text or "").strip()
-    if not txt:
-        return True
-
-    # Keep short header/footer branding labels near the top or bottom edge of the slide
-    top = int(shape.top or 0)
-    height = int(shape.height or 0)
-    near_top = top < int(slide_h_emu * 0.08)
-    near_bottom = (top + height) > int(slide_h_emu * 0.90)
-    if (near_top or near_bottom) and len(txt) <= 32 and "\n" not in txt:
-        return True
-
-    return False
+    return width >= int(slide_w_emu * 0.92) and height >= int(slide_h_emu * 0.92)
 
 
-def _snapshot_slide_prototype(slide, slide_h_emu: int) -> dict:
+def _snapshot_slide_prototype(slide, slide_w_emu: int, slide_h_emu: int) -> dict:
     """
-    Capture a prototype slide's layout reference, custom <p:bg> XML, relationships, and
-    decorative/background shapes (pictures & non-text vector shapes) before slides are cleared.
+    Capture a prototype slide's layout reference, its custom <p:bg> XML, and any full-bleed
+    background picture/shape before the sample slides are cleared.
     """
     c_sld = slide._element.find(f"{_NS_P}cSld")
     bg_el = c_sld.find(f"{_NS_P}bg") if c_sld is not None else None
@@ -1478,17 +1496,13 @@ def _snapshot_slide_prototype(slide, slide_h_emu: int) -> dict:
 
     decor_items = []
     for shape in slide.shapes:
-        if not _is_decorative_or_branding_shape(shape, slide_h_emu):
+        if not _is_full_bleed_background_shape(shape, slide_w_emu, slide_h_emu):
             continue
         try:
             if hasattr(shape, "image"):
                 decor_items.append({
                     "kind": "picture",
                     "blob": shape.image.blob,
-                    "left": int(shape.left or 0),
-                    "top": int(shape.top or 0),
-                    "width": int(shape.width or 0),
-                    "height": int(shape.height or 0),
                 })
             else:
                 decor_items.append({
@@ -1509,15 +1523,16 @@ def _snapshot_slide_prototype(slide, slide_h_emu: int) -> dict:
 def _capture_template_prototypes(prs: Presentation) -> Dict[str, dict]:
     """
     Inspect existing slides in an uploaded .pptx template and capture role prototypes
-    ('cover', 'section', 'content') so their backgrounds, frames, and logos survive slide clearing.
+    ('cover', 'section', 'content') so their backgrounds survive slide clearing.
     """
     prototypes: Dict[str, dict] = {}
     slides = list(prs.slides)
     if not slides:
         return prototypes
 
+    slide_w_emu = int(prs.slide_width or Inches(13.333))
     slide_h_emu = int(prs.slide_height or Inches(7.5))
-    prototypes["cover"] = _snapshot_slide_prototype(slides[0], slide_h_emu)
+    prototypes["cover"] = _snapshot_slide_prototype(slides[0], slide_w_emu, slide_h_emu)
 
     if len(slides) == 1:
         prototypes["content"] = prototypes["cover"]
@@ -1529,12 +1544,12 @@ def _capture_template_prototypes(prs: Presentation) -> Dict[str, dict]:
     for s in slides[1:]:
         lname = (s.slide_layout.name or "").lower()
         if "section" in lname or "divider" in lname:
-            prototypes.setdefault("section", _snapshot_slide_prototype(s, slide_h_emu))
+            prototypes.setdefault("section", _snapshot_slide_prototype(s, slide_w_emu, slide_h_emu))
         elif "content" in lname or "title" in lname:
             content_slide = s
             break
 
-    prototypes["content"] = _snapshot_slide_prototype(content_slide, slide_h_emu)
+    prototypes["content"] = _snapshot_slide_prototype(content_slide, slide_w_emu, slide_h_emu)
     prototypes.setdefault("section", prototypes["cover"])
     return prototypes
 
@@ -1608,7 +1623,7 @@ def _create_slide_with_template(
 ):
     """
     Add a new slide using the appropriate layout, strip empty layout placeholders,
-    and replay any captured prototype background (<p:bg>) and decorative/branding shapes.
+    and replay the captured prototype background (<p:bg> and full-bleed background shapes).
     """
     if not is_custom_template:
         layout_idx = 6 if len(prs.slide_layouts) > 6 else len(prs.slide_layouts) - 1
@@ -1646,21 +1661,24 @@ def _create_slide_with_template(
         except Exception:
             pass
 
-    # 2. Replay decorative background images, vector frames, and corner logos
+    # 2. Replay full-bleed background pictures/shapes only (stretched to the full canvas)
+    slide_w = int(prs.slide_width)
+    slide_h = int(prs.slide_height)
     for item in proto.get("decor_items") or []:
         try:
             if item["kind"] == "picture":
-                slide.shapes.add_picture(
-                    io.BytesIO(item["blob"]),
-                    item["left"],
-                    item["top"],
-                    width=item["width"],
-                    height=item["height"],
+                pic = slide.shapes.add_picture(
+                    io.BytesIO(item["blob"]), 0, 0, width=slide_w, height=slide_h
                 )
+                # Send the background picture behind everything else on the slide
+                sp_tree = slide.shapes._spTree
+                sp_tree.remove(pic._element)
+                sp_tree.insert(2, pic._element)
             elif item["kind"] == "xml":
                 new_el = copy.deepcopy(item["el"])
                 _remap_embed_rids(new_el, old_rels, slide.part)
-                slide.shapes._spTree.append(new_el)
+                sp_tree = slide.shapes._spTree
+                sp_tree.insert(2, new_el)
         except Exception:
             continue
 
@@ -1863,7 +1881,7 @@ def render_bullet_cards_slide(slide, slide_data: dict, theme: Dict[str, object])
             MSO_SHAPE.OVAL, Inches(1.05), Inches(top + (card_h - 0.46) / 2), Inches(0.46), Inches(0.46)
         )
         badge.fill.solid()
-        badge.fill.fore_color.rgb = theme["accent"]
+        badge.fill.fore_color.rgb = _ensure_white_text_contrast(theme["accent"])
         badge.line.fill.background()
         tf_b = badge.text_frame
         p_b = tf_b.paragraphs[0]
@@ -1949,7 +1967,7 @@ def render_two_column_slide(slide, slide_data: dict, theme: Dict[str, object]) -
             MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left + 0.2), Inches(top + 0.2), Inches(col_w - 0.4), Inches(0.55)
         )
         header_shape.fill.solid()
-        header_shape.fill.fore_color.rgb = theme["accent"] if idx == 1 else theme["takeaway_bg"]
+        header_shape.fill.fore_color.rgb = _ensure_white_text_contrast(theme["accent"]) if idx == 1 else theme["takeaway_bg"]
         header_shape.line.fill.background()
 
         tf_h = header_shape.text_frame
@@ -2186,7 +2204,8 @@ def build_presentation_pptx(
     """
     Assemble the complete .pptx presentation across all 8 visual layouts.
     Supports both Built-in Color Themes and Custom Uploaded .pptx Templates (inheriting
-    Slide Masters, role-specific layouts, prototype slide artwork/logos, theme colors, and fonts).
+    Slide Masters, role-specific layouts, slide backgrounds, theme colors, and fonts).
+    Sample-slide decorations (illustrations, frames, widgets, logos) are intentionally NOT inherited.
     """
     prototypes: Dict[str, dict] = {}
     is_custom_template = bool(custom_template_bytes)
@@ -3082,7 +3101,7 @@ def render_composer(chat: dict) -> None:
                         "Upload .pptx template",
                         type=["pptx"],
                         key="opt_tpl_file",
-                        help="Inherits Slide Master, role layouts, background art, logos, theme colors, and fonts.",
+                        help="Inherits the template's backgrounds, theme colors, and fonts (sample-slide decorations are not copied).",
                     )
                     if tpl_upload is not None:
                         new_bytes = tpl_upload.getvalue()
