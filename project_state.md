@@ -1,155 +1,90 @@
-# ChatPPT V2 — Project State (Handoff Document for the Next AI)
+# ChatPPT V2 — Project State (handoff for the next AI)
 
-> **How to use:** Paste or upload this file at the start of a new chat, together with ONLY the module file(s) the task needs (see section 2a — you no longer need to upload or return the whole code base).
-> Read it fully before touching any code. **Update "Changelog", "Github Commit Log", and "Pending Tasks" at the end of every work session** and return the updated file.
+> **How to use:** paste/upload this file in a new chat together with ONLY the module file(s) the task needs (see 2 "Task -> files").
+> Read it fully before editing. At the end of every session update **Last updated, Commit Log, Pending, Changelog** and return the file.
 
-Last updated: 2026-10-17 (new minimal `closing` thank-you layout, generated ONLY when the user asks for it)
-Github Commit Log: `feat(layout): add minimal closing (thank-you) layout, opt-in only; last-slide enforcement, trim-safe, editor + renderer support`
----
-
-## 0. User Preferences (MUST FOLLOW)
-
-- **Reply to the user in Chinese (华文 / 简体中文).**
-- **All code and all code comments MUST be strictly in English.**
-- Deliver changes as complete, ready-to-run **module files** (only the files that changed; keep their CRLF line endings when patching programmatically). Do not re-output untouched modules.
-- Never rename or move a function/constant unless the task requires it; if you do, update every importer and section 2a.
-- After every change run `python smoke_test.py` (offline, no API keys) and report the result.
-- Whenever the project state changes, also provide an updated `project_state.md`.
+Last updated: 2026-10-17 (minimal opt-in `closing` thank-you layout)
+Commit Log: `feat(layout): add minimal closing (thank-you) layout, opt-in only; last-slide enforcement, trim-safe, editor + renderer support`
 
 ---
 
-## 1. Project Goal & Tech Stack
+## 0. User preferences (MUST FOLLOW)
+- Reply to the user in **Chinese (简体中文)**. All **code and code comments strictly in English**.
+- Deliver only the changed files as complete, ready-to-run modules (keep CRLF line endings when patching programmatically). Don't re-output untouched modules.
+- Never rename/move a function or constant unless required; if you do, update every importer and section 2.
+- After every change run `python smoke_test.py` (offline, no API keys) and report the result; give an updated `project_state.md` when state changes.
 
-Build **"ChatPPT V2"**, an AI-powered presentation generator web app that turns uploaded reports (`.pdf`, `.docx`, `.txt`, `.md`) or pasted text into consulting-grade, visually diverse PowerPoint (`.pptx`) decks.
+## 1. Goal & stack
+"ChatPPT V2": Streamlit web app that turns reports (`.pdf/.docx/.txt/.md`) or pasted text into consulting-grade `.pptx` decks, and also answers questions about the source/deck in the same chat. Python 3, Streamlit >=1.46, `google-genai`, Pydantic v2, `python-pptx`, `pypdf`, `python-docx`, `Pillow`, `urllib`. Files: `app.py`, `chatppt/` package, `smoke_test.py`, `requirements.txt`, `README.md`, `.gitignore`, `.streamlit/config.toml`. Run: `streamlit run app.py`.
 
-- **Tech stack:** Python 3, Streamlit (`>=1.46.0`), Google GenAI SDK (`google-genai`), Pydantic v2, `python-pptx`, `pypdf`, `python-docx`, `Pillow`, `urllib`.
-- **Files:** `app.py` (thin entry point), `chatppt/` package (see 2a), `smoke_test.py`, `requirements.txt`, `README.md`, `.gitignore`, `.streamlit/config.toml`. Run with `streamlit run app.py`.
+## 2. File map
+Dependencies only point DOWN: `schemas/presets` -> `extraction/prompts/llm_client` -> `outline/images/chat_assistant` -> `pptx_template` -> `pptx_render` -> `pptx_build` -> `ui/*` -> `app.py`. Core modules never import UI code (may use `st.cache_data`).
 
----
+| File | Holds |
+| :--- | :--- |
+| `app.py` | `main`: page config + flow (state, css, sidebar, messages, deck block, composer, `run_pending`) |
+| `chatppt/schemas.py` | `LayoutType` (cover, section_divider, bullet_cards, three_cards, two_column, kpi_metrics, chart_slide, image_split, **closing**), `ChartType`, `SlideSpec`, `PresentationOutline`, sub-models, `IMAGE_MODE_*` |
+| `chatppt/presets.py` | `LLM_PROVIDERS`, `BUILTIN_THEMES`, `TONE_OPTIONS`, `LANGUAGE_OPTIONS`, `CUSTOM_PROVIDER`, `REVISION_MAX_CHARS` |
+| `chatppt/extraction.py` | `extract_text_from_uploaded_file`, `extract_images_from_report` |
+| `chatppt/prompts.py` | `SYSTEM_INSTRUCTION` (outline design + routing rules), `ASSISTANT_SYSTEM_INSTRUCTION` (Q&A/router) |
+| `chatppt/llm_client.py` | model discovery (`fetch_live_models`, `resolve_model_options`), JSON helpers (`extract_clean_json_str`, `repair_json_str`, `call_openai_compatible_json`), plain-text calls (`call_openai_compatible_text`, `call_gemini_text`, `strip_think_tags`) |
+| `chatppt/chat_assistant.py` | `route_message`, `build_assistant_prompt`, `build_deck_digest`, `parse_assistant_reply`, `AssistantDecision` |
+| `chatppt/outline.py` | `generate_smart_outline`, `_request_outline`, `_build_count_correction`, `_trim_slides_to_count`, `mentions_slide_count`, `parse_slide_count_change`, `sanitize_outline_dict` |
+| `chatppt/images.py` | Unsplash fetch, AI fallback, `resolve_slide_image_bytes`, `add_picture_fitted`, `_derive_fallback_keywords` |
+| `chatppt/pptx_template.py` | custom `.pptx` inheritance (colors, fonts, backgrounds, decoration stripping, prototypes) |
+| `chatppt/pptx_render.py` | drawing helpers + 9 layout renderers (`render_closing_slide` etc.) |
+| `chatppt/pptx_build.py` | `build_presentation_pptx` (deck assembly, layout dispatch) |
+| `chatppt/ui/state.py` | `init_state`, chat create/delete |
+| `chatppt/ui/css.py` | `APP_CSS` (theme-neutral, no hard-coded page colors) |
+| `chatppt/ui/settings.py` | settings dialog, `get_active_model_cfg`, `open_settings` |
+| `chatppt/ui/sidebar.py`, `messages.py` | sidebar; hero + chat messages (renders Markdown + `meta` caption) |
+| `chatppt/ui/outline_editor.py` + `editor_text.py` | per-slide editor + text<->data helpers |
+| `chatppt/ui/export.py` | deck block: editor + render/download (user presses a separate render button) |
+| `chatppt/ui/generation.py` | `handle_send`, `_prepare_generation`, `run_pending` |
+| `chatppt/ui/composer.py` + `common.py` | bottom input bar (Attach, Template, Model, `⚙ N slides` popover, **Send ➤**) |
 
-## 2a. File Map (what to give the AI for each task)
-
-Dependencies only point DOWN this list (no cycles; core modules never import `ui/*`). Untouched modules do not need to be uploaded.
-
-| File | Responsibility | Edit when... |
-| :--- | :--- | :--- |
-| `app.py` | Entry point: page config + page flow (`main`) | changing overall page layout |
-| `chatppt/schemas.py` | Enums, Pydantic models (`SlideSpec`, `PresentationOutline`...), image-mode constants | adding a layout type or slide field |
-| `chatppt/presets.py` | `LLM_PROVIDERS`, `BUILTIN_THEMES`, `TONE_OPTIONS`, `LANGUAGE_OPTIONS`, provider name constants | adding a provider/preset model/theme/tone/language |
-| `chatppt/extraction.py` | PDF/DOCX/TXT/MD text + embedded image extraction | changing how reports are read |
-| `chatppt/prompts.py` | `SYSTEM_INSTRUCTION` (LLM design prompt) | tuning outline quality/routing rules |
-| `chatppt/llm_client.py` | Live model discovery, JSON cleaning/repair, `call_openai_compatible_json` | provider/model quirks, token limits, JSON failures |
-| `chatppt/chat_assistant.py` | Q&A + routing: `route_message` (one LLM call -> `ACTION: ANSWER` + reply, or `ACTION: REVISE`), `build_assistant_prompt`, `build_deck_digest`, `parse_assistant_reply` | how questions are answered / what context the assistant sees |
-| `chatppt/images.py` | Unsplash fetch, AI image fallback, `resolve_slide_image_bytes`, `add_picture_fitted` | image sources/queries/placement |
-| `chatppt/outline.py` | `generate_smart_outline`, slide-count retries/trim, `sanitize_outline_dict` | outline requesting/validation/normalizing |
-| `chatppt/pptx_template.py` | Custom `.pptx` inheritance (colors, fonts, backgrounds, decoration stripping, prototypes) | uploaded template not reproduced correctly |
-| `chatppt/pptx_render.py` | Drawing helpers + the 9 layout renderers | changing how one layout looks |
-| `chatppt/pptx_build.py` | `build_presentation_pptx` (deck assembly, layout dispatch) | deck-level flow, adding a layout dispatch entry |
-| `chatppt/ui/state.py` | Session-state defaults, chat create/delete | new session key or default setting |
-| `chatppt/ui/css.py` | `APP_CSS`, CSS injection (theme-independent: no hard-coded page colors) | look & feel |
-| `chatppt/ui/settings.py` | Settings dialog (provider -> key -> model, image mode/keys), `get_active_model_cfg`, `get_model_options` | settings window, provider/model selection |
-| `chatppt/ui/sidebar.py` | Sidebar (New chat, Settings, chat list) | sidebar |
-| `chatppt/ui/messages.py` | Hero screen + chat messages | welcome screen/message look |
-| `chatppt/ui/outline_editor.py` + `ui/editor_text.py` | Per-slide outline editor + text<->data helpers | what is editable per slide |
-| `chatppt/ui/export.py` | Deck block: editor + render/download | export/download flow |
-| `chatppt/ui/generation.py` | `handle_send`, `run_pending` (what happens on Generate) | send/validation/generation job |
-| `chatppt/ui/composer.py` + `ui/common.py` | Bottom input bar and its popovers | input bar |
-
-**Task -> files to upload (plus this file):**
+**Task -> files to upload:**
 - Outline quality / prompt wording -> `prompts.py` (+ `outline.py`)
-- Q&A answers / question-vs-instruction routing -> `chat_assistant.py` + `prompts.py` (`ASSISTANT_SYSTEM_INSTRUCTION`) (+ `ui/generation.py`)
-- Slide count / outline validation -> `outline.py` (+ `schemas.py`)
-- LLM provider, model list, empty/invalid JSON -> `llm_client.py` (+ `presets.py`)
-- Uploaded template looks wrong (frames, fonts, colors) -> `pptx_template.py`
-- A layout's visuals -> `pptx_render.py` (+ `schemas.py` if a new field)
-- NEW layout type -> `schemas.py`, `outline.py`, `pptx_render.py`, `pptx_build.py`, `ui/outline_editor.py`
-- Images (Unsplash/AI/placeholder) -> `images.py` (+ `ui/settings.py` for settings)
-- Settings window -> `ui/settings.py` (+ `ui/state.py` for new defaults, `presets.py` for providers)
-- Input bar / Generate behavior -> `ui/composer.py`, `ui/generation.py`
-- Styling -> `ui/css.py`
+- Q&A / question-vs-instruction routing -> `chat_assistant.py`, `prompts.py`, `ui/generation.py`
+- Slide count / validation -> `outline.py` (+ `schemas.py`, `ui/generation.py`)
+- Provider/model/JSON problems -> `llm_client.py` (+ `presets.py`)
+- Template looks wrong -> `pptx_template.py`; a layout's look -> `pptx_render.py`
+- NEW layout -> `schemas.py`, `prompts.py`, `outline.py`, `pptx_render.py`, `pptx_build.py`, `ui/outline_editor.py`
+- Images -> `images.py` (+ `ui/settings.py`); settings -> `ui/settings.py`, `ui/state.py`, `presets.py`
+- Input bar / send behavior -> `ui/composer.py`, `ui/generation.py`; styling -> `ui/css.py`
 
-**Rules for any AI editing the code:**
-1. Keep layering: `schemas/presets` -> `extraction/prompts/llm_client` -> `outline/images/chat_assistant` -> `pptx_template` -> `pptx_render` -> `pptx_build` -> `ui/*` -> `app.py`. A module may only import from modules above it. Core modules must not import `streamlit` UI code (they may use `st.cache_data`).
-2. Streamlit session keys are created in `ui/state.py::init_state`; read/write them elsewhere via `st.session_state.settings[...]`.
-3. If you add a new top-level function used by other modules, list it in the file map above.
-4. Finish with `python smoke_test.py`; add a check there when you fix a bug that could regress (e.g. template frames/fonts).
+**Rules:** (1) keep layering above; (2) session keys are created in `ui/state.py::init_state`, settings read via `st.session_state.settings[...]`; (3) list new cross-module functions in this table; (4) finish with `python smoke_test.py` and add a check for bugs that could regress.
 
----
+## 3. Key behaviors (what the code does today)
+- **Send flow** (`handle_send` -> `run_pending`): text-only messages <= `REVISION_MAX_CHARS` are *routed*: `route_message` makes one plain-text LLM call (protocol first line `ACTION: ANSWER` + reply, or `ACTION: REVISE`; context = source (12k chars) + deck digest + last 6 messages). ANSWER -> assistant bubble (meta "💬 Answer · outline unchanged"), deck and slider untouched. REVISE -> outline generation. Attached file, long text, or a plain relative-count instruction without `?` skip routing. Router failure -> REVISE. Side effects (commit source for no-deck case, `opt_slides_sync`, user-message meta/✏️) happen in `_prepare_generation`, only after REVISE is known.
+- **Slide count**: `generate_smart_outline(enforce_count=True)` = prompt rule + up to 2 corrective retries + deterministic trim. `mentions_slide_count` (absolute, "6 slides") disables enforcement. `parse_slide_count_change` (relative: "add one more slide", "add a thank you slide", "remove the last slide", "加一页", "删掉最后一页"; clamp 4-20) sets target = current deck size + delta and takes precedence; the revision prompt then lists the current slide titles and says keep all existing slides. `render_composer` applies `opt_slides_sync` to the slider before it is created.
+- **closing layout** (opt-in only): big centered phrase + accent bar + optional one-line presenter note; no cards/points/takeaway/contact details. The prompt forbids adding it unprompted (default decks end with a content slide). `sanitize_outline_dict` keeps one closing slide, moves it last, clears its takeaway; `_trim_slides_to_count` protects closing + the conclusion before it; closing is never auto-promoted to `image_split`; `pptx_build` uses role `cover` for it so custom templates give it the cover background.
+- **Sanitizer**: equalizes chart categories/values, fills missing structures, forces slide 1 = cover, guarantees >=1 `image_split` on 4+ slide decks, sets `image_source_mode`.
+- **Images**: Option 1 `Unsplash Photo First (Fallback to AI)` (default; 2-word retry; then Imagen 3 -> Pollinations); Option 2 `Reserve Photo Placeholder`. Always insert via `add_picture_fitted`.
+- **Custom template**: inherits widescreen-scaled backgrounds, sample-slide fonts, theme/sampled colors; strips master/layout/slide decorations; WCAG white-text guard.
+- **LLM quirks**: reasoning models (`gpt-oss`, Groq `qwen3`, `deepseek-reasoner`) use 8192 tokens, `reasoning_effort` low/none, `<think>` stripping, `message.reasoning` fallback, retry without optional params.
+- **UI**: theme-neutral CSS; `.streamlit/config.toml` defines `[theme.light]`/`[theme.dark]` (accent #C96442; never put colors in the bare `[theme]` table, it locks one mode); 50 MB upload limit there.
 
-## 2. Architecture (function-level overview; the file that holds each part is in 2a)
+## 4. Known constraints / gotchas
+- Gemini structured output forbids arbitrary `Dict`: chart data stays parallel lists.
+- `chat["slides"]` is `None` until the first deck exists: use `bool(...)` or `or []`, never bare `len()`.
+- The `opt_slides` slider has NO default value in `st.slider`; the default 8 is set once via `ss.setdefault("opt_slides", 8)` (avoids Streamlit's "default value + Session State API" warning). Session state can only be set before the widget is created in a run.
+- Session state is per browser session; refresh clears chats and keys.
+- Patching files: files use CRLF; preserve it.
 
-1. **Schemas & Constants:**
-   - `PresentationOutline` -> `SlideSpec` (`LayoutType`: `cover`, `section_divider`, `bullet_cards`, `three_cards`, `two_column`, `kpi_metrics`, `chart_slide`, `image_split`, `closing`).
-   - Sub-models: `StructuredPoint`, `ColumnContent`, `KPIMetric`, `ChartSpec` (`bar`, `line`, `pie`), `ImageSpec` (`preferred_style` defaults to `stock_photo`; `placement`: `left`, `right`).
-   - Two-option image mode constants: `IMAGE_MODE_UNSPLASH_FIRST = "Unsplash Photo First (Fallback to AI)"` (default), `IMAGE_MODE_PLACEHOLDER = "Reserve Photo Placeholder"`, `IMAGE_MODE_OPTIONS`.
-2. **Presets & Themes:** `LLM_PROVIDERS` (Gemini, Groq, OpenAI, DeepSeek, OpenRouter, Custom OpenAI-Compatible) and `BUILTIN_THEMES` (Corporate Blue, Modern Dark, Minimalist Light, Emerald Forest).
-3. **Extraction:** `extract_text_from_uploaded_file()`, `extract_images_from_report()`.
-4. **LLM & JSON Layer:**
-   - Live model discovery: `fetch_live_models()` (`@st.cache_data(ttl=600)`), `resolve_model_options()`, `_is_chat_model()`, `_derive_models_url()`.
-   - JSON & reasoning protection: `extract_clean_json_str()` (strips closed/unclosed `<think>` blocks and code fences), `repair_json_str()`, `call_openai_compatible_json()` (sets `max_completion_tokens=8192` / `max_tokens=8192`, sets `reasoning_effort="low"` for `gpt-oss` and `"none"` for Groq `qwen3`, checks `message.reasoning` if `content` is empty, repairs `failed_generation`, and retries without `response_format` or optional params).
-5. **Outline Router & Sanitizer:**
-   - `generate_smart_outline()` -> `_request_outline()` (with retry), `_build_count_correction()` (up to 2 corrective retries), `_trim_slides_to_count()`, `mentions_slide_count()` (absolute counts, e.g. "6 slides" -> count not enforced), `parse_slide_count_change()` (relative edits, e.g. "add one more slide" / "remove the last slide" / "加一页" -> new target = current deck size + delta, clamped 4-20; takes precedence over `mentions_slide_count`).
-   - `sanitize_outline_dict()` (equalizes chart `categories`/`values`, guarantees >=1 `image_split` slide on 4+ slide decks, defaults `image_source_mode` to `IMAGE_MODE_UNSPLASH_FIRST`).
-6. **Two-Option Image Engine:**
-   - `resolve_slide_image_bytes()`: Option 1 queries `fetch_unsplash_image_bytes()` first (strips `Client-ID ` prefix, retries with 2-word core query if needed) and falls back to `generate_ai_image_bytes()` (Imagen 3 `imagen-3.0-generate-002` -> Pollinations AI); Option 2 returns `None` to render a reserved placeholder box.
-   - `add_picture_fitted()` centers images without stretching and converts RGBA/WEBP to RGB.
-7. **PPTX Rendering & Custom Template Inheritance:**
-   - Template helpers: `_scale_template_to_widescreen()`, `extract_template_style()` + `_parse_theme_xml_colors_and_fonts()` + `_sample_slide_colors_and_fonts()` (prefers sample-slide run fonts over `theme1.xml`), `_capture_template_prototypes()` + `_is_full_bleed_background_shape()` + `_has_visible_fill()`, `_strip_template_decorations()` (removes non-placeholder frames/ornaments from layouts/masters), `_create_slide_with_template()`, `apply_slide_fonts()`, `_ensure_white_text_contrast()`.
-   - Renderers: `build_presentation_pptx()` + 9 layout renderers.
-8. **Chat-Style UI:**
-   - Session state: `chats`, `chat_order`, `active_chat`, `settings` (`api_keys`, `provider`, `models`, `custom_base_url`, `image_mode`, `unsplash_key`, `use_imagen`), `custom_tpl_bytes`, `custom_tpl_name`.
-   - One-page `settings_dialog()` (Provider -> API key -> Model, plus 2-option `Slide image mode`, Unsplash key, Imagen toggle, single Save).
-   - Sticky bottom composer (`📎 Attach`, `🎨 Template`, `🤖 Model`, `⚙ Options`, `Generate ➤`), per-slide `render_outline_editor()`, and `render_export_block()`.
+## 5. Pending
+- [ ] User to verify: default deck has NO thank-you slide; "add a thank you slide" -> 9 slides, last is a big centered "Thank You" (also with a custom .pptx template).
+- [ ] User to verify Q&A: after a deck exists ask "why three cards on slide 4?" -> answer bubble, outline unchanged; "make the titles shorter" -> regenerates; first message "what can you do?" -> answer, no deck.
+- [ ] User to verify: 8 slides, then "add one more slide conclusion" -> 9 slides (old 8 kept) and slider shows 9; no `opt_slides` warning in the terminal.
+- [ ] User to check light/dark/system look after CSS and theme changes.
+- [ ] Known edge: if a closing slide already exists and the user asks for another, the model may add a different slide (not handled).
+- [ ] Optional: deploy (GitHub + Streamlit Community Cloud / Railway); further UI/render enhancements on request.
 
----
-
-## 3. Completed & Verified Features
-
-- **[VERIFIED]** 8 consulting layouts, Action Titles, Key Takeaway banners, and native editable PowerPoint charts.
-- **[VERIFIED]** Multi-provider BYOK with live `/models` discovery, caching, and manual refresh.
-- **[VERIFIED]** Claude-style chat UI with theme-neutral CSS (works in both light and dark themes) and one-page Settings dialog.
-- **[VERIFIED 4a-1]** Exact slide count enforcement (prompt constraint + corrective retries + deterministic trim + revision count detection).
-- **[VERIFIED 4a-2]** Custom `.pptx` template inheritance: inherits widescreen-scaled backgrounds (`<p:bg>` + full-bleed filled/picture shapes), sample-slide fonts, and theme/sampled colors; strips master/layout/slide decorative frames and widgets; enforces WCAG white-text contrast on banners/badges.
-- **[VERIFIED 4a-3]** Two-option slide image mode: `1. Unsplash Photo First (Fallback to AI)` (default everywhere) and `2. Reserve Photo Placeholder`, with 2-word Unsplash query retry and guaranteed `image_split` slide on 4+ slide decks.
-- **[VERIFIED]** Reasoning model compatibility (`openai/gpt-oss-120b`, `qwen/qwen3-32b`, `deepseek-reasoner`): 8192 token budget, low/none reasoning effort, `<think>` and `message.reasoning` fallback.
-
----
-
-## 4. Known Constraints
-
-- Gemini structured outputs forbid arbitrary `Dict`; keep chart data as parallel lists (`categories: List[str]`, `values: List[float]`).
-- Always insert images via `add_picture_fitted()` to avoid stretching and WEBP/RGBA crashes.
-- Session state is in-memory per browser session; refreshing clears chats and keys.
-
----
-
-## 5. Pending Tasks
-
-- [x] Bug 4a-1 (slide count) — CLOSED & VERIFIED
-- [x] Bug 4a-2 (custom `.pptx` template inheritance) — CLOSED & VERIFIED
-- [x] Bug 4a-3 (2-option Unsplash/placeholder image mode + Groq `gpt-oss-120b` fix) — CLOSED & VERIFIED
-- [x] Split code base verified by user (`smoke_test.py` passed, app runs).
-- [ ] User to check the light/dark composer look after the CSS change (`ui/css.py`, `ui/composer.py`).
-- [x] `config.toml` lives in `.streamlit/` (50 MB upload limit + themes apply).
-- [ ] User to check Light / Dark / System after the theme change; tune colors only in `.streamlit/config.toml` (never put colors in the bare `[theme]` table: it locks the app to one mode).
-- [ ] User to verify: generate 8 slides, then revise with "add one more slide conclusion" -> expect 9 slides (old 8 kept, Conclusion last) and the slider showing 9.
-- [ ] User to verify Q&A: after a deck exists ask "why did you use three cards on slide 4?" -> answer bubble, outline unchanged; then "make the titles shorter" -> outline regenerates; a first message like "what can you do?" -> answer, no deck.
-- [ ] User to verify: a default deck has NO thank-you slide; then send "add a thank you slide" -> 9 slides, last one is a big centered "Thank You" (no cards); try a custom .pptx template too.
-- [ ] Optional: deploy to GitHub + Streamlit Community Cloud / Railway for 24/7 hosting.
-- [ ] Optional: next UI or rendering enhancements requested by the user.
-
----
-
-## 6. Changelog (Condensed)
-
+## 6. Changelog (condensed)
 | Date | Change |
 | :--- | :--- |
-| 2026-10-16 | V2 core: 8 layouts, native charts, multi-provider BYOK, live model discovery, JSON repair, Claude-style chat UI, theme-neutral CSS, Bug 4a-1 slide count enforcement |
-| 2026-10-17 | Bug 4a-2 verified: custom `.pptx` template inheritance (backgrounds + sample-slide fonts/colors only, master/layout decorations stripped, WCAG contrast guard); one-page Settings rework |
-| 2026-10-17 | Bug 4a-3 & reasoning model fix verified: 2-option image mode (`Unsplash Photo First (Fallback to AI)` [default] vs `Reserve Photo Placeholder`), 2-word Unsplash retry, guaranteed `image_split` slide, and `max_completion_tokens=8192` + `reasoning_effort` tuning for Groq `gpt-oss-120b` / `qwen3` |
-| 2026-10-17 | Refactor: monolithic `app.py` (112 top-level definitions, 3.4k lines) split into `chatppt/` package (schemas, presets, extraction, prompts, llm_client, outline, images, pptx_template, pptx_render, pptx_build, ui/*) + thin `app.py`; every definition verified AST-identical to the original; offline `smoke_test.py` added; `_derive_fallback_keywords` now lives in `images.py` to keep layering |
-| 2026-10-17 | UI: composer dock no longer uses a Python-detected background color (it stayed dark after switching to Light); now a frosted blur strip + translucent composer works in both themes; textarea fully transparent (no dark outline); primary buttons use accent #C96442; footer note `ChatPPT can make mistakes. Please check responses.` under the composer; removed `_dock_background()` |
-| 2026-10-17 | Theme: `.streamlit/config.toml` now defines `[theme.light]` and `[theme.dark]` (+ sidebar tables) so the menu offers System / Light / Dark; shared accent #C96442, warm cream light palette (#FAF9F5 / #F0EEE6 / text #1F1E1D), warm charcoal dark palette (#262624 / #30302E / text #ECEBE4) |
-| 2026-10-17 | Fix: revision "add one more slide conclusion" replaced slide 8 because the slider (8) was still enforced and trimmed the 9th slide. Now `parse_slide_count_change()` (outline.py) computes target = current slides + delta, `handle_send` (generation.py) passes it as `num_slides`, appends the current slide titles + "keep all existing slides" to the LLM source, and queues `opt_slides_sync` which `render_composer` (composer.py) applies to the slider before it is created. Smoke test extended with 8 parser assertions |
-| 2026-10-17 | Feature: one **Send ➤** button (was Generate). Text-only messages up to `REVISION_MAX_CHARS` are routed by `chat_assistant.route_message` (1 plain-text LLM call, protocol `ACTION: ANSWER` / `ACTION: REVISE`, context = source + current outline digest + last 6 chat messages). ANSWER -> assistant bubble ("💬 Answer · outline unchanged"), deck/slider untouched; REVISE -> old outline generation. Attached files, long texts, and plain relative-count instructions ("add one more slide", no `?`) skip the routing call. Router failure falls back to REVISE. `llm_client.py` gained `call_openai_compatible_text`, `call_gemini_text`, `strip_think_tags`; `handle_send` now defers side effects (source commit, `opt_slides_sync`) to `run_pending` via `_prepare_generation`. Smoke test: `check_assistant` |
-| 2026-10-17 | Feature: `closing` layout (schemas, prompts, outline, pptx_render `render_closing_slide`, pptx_build, ui/outline_editor). Big centered phrase + accent bar + optional one-line presenter note; no cards/points/takeaway/contact details. Opt-in only: the prompt forbids adding it unprompted (decks end with a content slide). Sanitizer moves a closing slide to the end, keeps one, clears its takeaway; `_trim_slides_to_count` protects closing + the conclusion before it; closing is excluded from the image_split auto-promotion. `parse_slide_count_change` now also understands "add (a) thank you slide" and "remove the thank you slide" (fewer false positives via a wider preposition skip list); the revision prompt tells the model to use `closing` as the last slide. Smoke test: sample deck now has 9 layouts + `check_closing_slide` |
+| 2026-10-16/17 | V2 core: 9 layouts (8 + closing), native charts, multi-provider BYOK + live model discovery, JSON repair, Claude-style chat UI; exact slide-count enforcement; custom `.pptx` template inheritance; 2-option image mode; reasoning-model fixes; monolith split into `chatppt/` package + `smoke_test.py` |
+| 2026-10-17 | UI/theme: frosted composer dock works in light+dark, accent #C96442, footer note; `[theme.light]/[theme.dark]` in `.streamlit/config.toml` (System/Light/Dark selector) |
+| 2026-10-17 | Fix: "add one more slide" replaced slide 8 -> relative count parsing (`parse_slide_count_change`), keep-existing-slides prompt, slider sync (`opt_slides_sync`) |
+| 2026-10-17 | Feature: single **Send ➤** button with LLM routing between Q&A and deck revision (`chat_assistant.py`, plain-text calls in `llm_client.py`); fixed `None` slides crash and the `opt_slides` Streamlit warning |
+| 2026-10-17 | Feature: opt-in minimal `closing` layout (schemas, prompts, outline, pptx_render, pptx_build, outline_editor); parser also understands "add/remove thank you slide"; smoke test has 9 layouts + `check_closing_slide` + `check_assistant` |
