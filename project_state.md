@@ -1,17 +1,19 @@
 # ChatPPT V2 — Project State (Handoff Document for the Next AI)
 
-> **How to use:** Paste or upload this file at the start of a new chat, together with the latest `app.py`.
+> **How to use:** Paste or upload this file at the start of a new chat, together with ONLY the module file(s) the task needs (see section 2a — you no longer need to upload or return the whole code base).
 > Read it fully before touching any code. **Update "Changelog", "Github Commit Log", and "Pending Tasks" at the end of every work session** and return the updated file.
 
-Last updated: 2026-10-17 (4a-1, 4a-2, 4a-3 ALL VERIFIED; 2-option image mode + reasoning model token/JSON fix)
-Github Commit Log: `fix(llm,images): verify 2-option image mode (Unsplash first -> AI fallback, or placeholder) and fix empty JSON on Groq reasoning models via max_completion_tokens=8192 & low reasoning_effort`
+Last updated: 2026-10-17 (4a-1, 4a-2, 4a-3 ALL VERIFIED; code split from one 3.4k-line app.py into the `chatppt/` package + `smoke_test.py`)
+Github Commit Log: `refactor: split monolithic app.py into chatppt/ package (schemas, presets, llm_client, outline, images, pptx_template/render/build, ui/*) with identical behavior; add offline smoke_test.py`
 ---
 
 ## 0. User Preferences (MUST FOLLOW)
 
 - **Reply to the user in Chinese (华文 / 简体中文).**
 - **All code and all code comments MUST be strictly in English.**
-- Deliver changes as a complete, ready-to-run `app.py` (preserve existing CRLF line endings when patching programmatically).
+- Deliver changes as complete, ready-to-run **module files** (only the files that changed; keep their CRLF line endings when patching programmatically). Do not re-output untouched modules.
+- Never rename or move a function/constant unless the task requires it; if you do, update every importer and section 2a.
+- After every change run `python smoke_test.py` (offline, no API keys) and report the result.
 - Whenever the project state changes, also provide an updated `project_state.md`.
 
 ---
@@ -21,11 +23,58 @@ Github Commit Log: `fix(llm,images): verify 2-option image mode (Unsplash first 
 Build **"ChatPPT V2"**, an AI-powered presentation generator web app that turns uploaded reports (`.pdf`, `.docx`, `.txt`, `.md`) or pasted text into consulting-grade, visually diverse PowerPoint (`.pptx`) decks.
 
 - **Tech stack:** Python 3, Streamlit (`>=1.46.0`), Google GenAI SDK (`google-genai`), Pydantic v2, `python-pptx`, `pypdf`, `python-docx`, `Pillow`, `urllib`.
-- **Files:** `app.py` (single-file architecture), `requirements.txt`, `README.md`, `.gitignore`, `.streamlit/config.toml`.
+- **Files:** `app.py` (thin entry point), `chatppt/` package (see 2a), `smoke_test.py`, `requirements.txt`, `README.md`, `.gitignore`, `.streamlit/config.toml`. Run with `streamlit run app.py`.
 
 ---
 
-## 2. Architecture (section order inside `app.py`)
+## 2a. File Map (what to give the AI for each task)
+
+Dependencies only point DOWN this list (no cycles; core modules never import `ui/*`). Untouched modules do not need to be uploaded.
+
+| File | Responsibility | Edit when... |
+| :--- | :--- | :--- |
+| `app.py` | Entry point: page config + page flow (`main`) | changing overall page layout |
+| `chatppt/schemas.py` | Enums, Pydantic models (`SlideSpec`, `PresentationOutline`...), image-mode constants | adding a layout type or slide field |
+| `chatppt/presets.py` | `LLM_PROVIDERS`, `BUILTIN_THEMES`, `TONE_OPTIONS`, `LANGUAGE_OPTIONS`, provider name constants | adding a provider/preset model/theme/tone/language |
+| `chatppt/extraction.py` | PDF/DOCX/TXT/MD text + embedded image extraction | changing how reports are read |
+| `chatppt/prompts.py` | `SYSTEM_INSTRUCTION` (LLM design prompt) | tuning outline quality/routing rules |
+| `chatppt/llm_client.py` | Live model discovery, JSON cleaning/repair, `call_openai_compatible_json` | provider/model quirks, token limits, JSON failures |
+| `chatppt/images.py` | Unsplash fetch, AI image fallback, `resolve_slide_image_bytes`, `add_picture_fitted` | image sources/queries/placement |
+| `chatppt/outline.py` | `generate_smart_outline`, slide-count retries/trim, `sanitize_outline_dict` | outline requesting/validation/normalizing |
+| `chatppt/pptx_template.py` | Custom `.pptx` inheritance (colors, fonts, backgrounds, decoration stripping, prototypes) | uploaded template not reproduced correctly |
+| `chatppt/pptx_render.py` | Drawing helpers + the 8 layout renderers | changing how one layout looks |
+| `chatppt/pptx_build.py` | `build_presentation_pptx` (deck assembly, layout dispatch) | deck-level flow, adding a layout dispatch entry |
+| `chatppt/ui/state.py` | Session-state defaults, chat create/delete | new session key or default setting |
+| `chatppt/ui/css.py` | `APP_CSS`, theme-aware CSS injection | look & feel |
+| `chatppt/ui/settings.py` | Settings dialog (provider -> key -> model, image mode/keys), `get_active_model_cfg`, `get_model_options` | settings window, provider/model selection |
+| `chatppt/ui/sidebar.py` | Sidebar (New chat, Settings, chat list) | sidebar |
+| `chatppt/ui/messages.py` | Hero screen + chat messages | welcome screen/message look |
+| `chatppt/ui/outline_editor.py` + `ui/editor_text.py` | Per-slide outline editor + text<->data helpers | what is editable per slide |
+| `chatppt/ui/export.py` | Deck block: editor + render/download | export/download flow |
+| `chatppt/ui/generation.py` | `handle_send`, `run_pending` (what happens on Generate) | send/validation/generation job |
+| `chatppt/ui/composer.py` + `ui/common.py` | Bottom input bar and its popovers | input bar |
+
+**Task -> files to upload (plus this file):**
+- Outline quality / prompt wording -> `prompts.py` (+ `outline.py`)
+- Slide count / outline validation -> `outline.py` (+ `schemas.py`)
+- LLM provider, model list, empty/invalid JSON -> `llm_client.py` (+ `presets.py`)
+- Uploaded template looks wrong (frames, fonts, colors) -> `pptx_template.py`
+- A layout's visuals -> `pptx_render.py` (+ `schemas.py` if a new field)
+- NEW layout type -> `schemas.py`, `outline.py`, `pptx_render.py`, `pptx_build.py`, `ui/outline_editor.py`
+- Images (Unsplash/AI/placeholder) -> `images.py` (+ `ui/settings.py` for settings)
+- Settings window -> `ui/settings.py` (+ `ui/state.py` for new defaults, `presets.py` for providers)
+- Input bar / Generate behavior -> `ui/composer.py`, `ui/generation.py`
+- Styling -> `ui/css.py`
+
+**Rules for any AI editing the code:**
+1. Keep layering: `schemas/presets` -> `extraction/prompts/llm_client` -> `outline/images` -> `pptx_template` -> `pptx_render` -> `pptx_build` -> `ui/*` -> `app.py`. A module may only import from modules above it. Core modules must not import `streamlit` UI code (they may use `st.cache_data`).
+2. Streamlit session keys are created in `ui/state.py::init_state`; read/write them elsewhere via `st.session_state.settings[...]`.
+3. If you add a new top-level function used by other modules, list it in the file map above.
+4. Finish with `python smoke_test.py`; add a check there when you fix a bug that could regress (e.g. template frames/fonts).
+
+---
+
+## 2. Architecture (function-level overview; the file that holds each part is in 2a)
 
 1. **Schemas & Constants:**
    - `PresentationOutline` -> `SlideSpec` (`LayoutType`: `cover`, `section_divider`, `bullet_cards`, `three_cards`, `two_column`, `kpi_metrics`, `chart_slide`, `image_split`).
@@ -77,6 +126,7 @@ Build **"ChatPPT V2"**, an AI-powered presentation generator web app that turns 
 - [x] Bug 4a-1 (slide count) — CLOSED & VERIFIED
 - [x] Bug 4a-2 (custom `.pptx` template inheritance) — CLOSED & VERIFIED
 - [x] Bug 4a-3 (2-option Unsplash/placeholder image mode + Groq `gpt-oss-120b` fix) — CLOSED & VERIFIED
+- [ ] User to run `python smoke_test.py` and `streamlit run app.py` once on the split code base to confirm (behavior was verified identical function-by-function; UI could not be launched in the sandbox).
 - [ ] Optional: deploy to GitHub + Streamlit Community Cloud / Railway for 24/7 hosting.
 - [ ] Optional: next UI or rendering enhancements requested by the user.
 
@@ -89,3 +139,4 @@ Build **"ChatPPT V2"**, an AI-powered presentation generator web app that turns 
 | 2026-10-16 | V2 core: 8 layouts, native charts, multi-provider BYOK, live model discovery, JSON repair, Claude-style chat UI, theme-neutral CSS, Bug 4a-1 slide count enforcement |
 | 2026-10-17 | Bug 4a-2 verified: custom `.pptx` template inheritance (backgrounds + sample-slide fonts/colors only, master/layout decorations stripped, WCAG contrast guard); one-page Settings rework |
 | 2026-10-17 | Bug 4a-3 & reasoning model fix verified: 2-option image mode (`Unsplash Photo First (Fallback to AI)` [default] vs `Reserve Photo Placeholder`), 2-word Unsplash retry, guaranteed `image_split` slide, and `max_completion_tokens=8192` + `reasoning_effort` tuning for Groq `gpt-oss-120b` / `qwen3` |
+| 2026-10-17 | Refactor: monolithic `app.py` (112 top-level definitions, 3.4k lines) split into `chatppt/` package (schemas, presets, extraction, prompts, llm_client, outline, images, pptx_template, pptx_render, pptx_build, ui/*) + thin `app.py`; every definition verified AST-identical to the original; offline `smoke_test.py` added; `_derive_fallback_keywords` now lives in `images.py` to keep layering |
