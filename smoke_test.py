@@ -290,9 +290,65 @@ def check_patch() -> None:
     print("[ok] targeted patch: only target slides replaced, closing guard, image mode kept")
 
 
+def check_token_limits() -> None:
+    import json
+    import urllib.error
+    import urllib.request
+
+    import chatppt.llm_client as llm
+
+    def groq_error(code, limit, requested, used=None, retry=None):
+        used_part = f"Used {used}, " if used is not None else ""
+        retry_part = f" Please try again in {retry}s." if retry is not None else ""
+        body = json.dumps({"error": {"message": f"Request too large for model `m` on tokens per minute (TPM): "
+                                                f"Limit {limit}, {used_part}Requested {requested}.{retry_part}",
+                                     "type": "tokens", "code": "rate_limit_exceeded"}})
+        return urllib.error.HTTPError("u", code, "err", {}, io.BytesIO(body.encode()))
+
+    class Ok:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": '{"ok": 1}'}, "finish_reason": "stop"}]}).encode()
+
+    def run(responses):
+        caps, real = [], urllib.request.urlopen
+
+        def fake(req, timeout=None):
+            caps.append(json.loads(req.data).get("max_completion_tokens"))
+            r = responses.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        urllib.request.urlopen = fake
+        try:
+            return llm._post_chat_completion("https://api.groq.com/x", {}, {"max_completion_tokens": 8192}, "m"), caps
+        finally:
+            urllib.request.urlopen = real
+
+    # The user's case: input alone (~8.4k) exceeds an 8k TPM plan -> one readable error, no retries
+    try:
+        run([groq_error(413, 8000, 16550)])
+        raise AssertionError("expected TokenBudgetError")
+    except llm.TokenBudgetError as e:
+        assert "too large" in str(e) and "8,000" in str(e)
+    # Only the reserved output makes it too big -> retried once with a smaller output cap
+    _, caps = run([groq_error(413, 12000, 15300), Ok()])
+    assert caps[0] == 8192 and caps[1] == 12000 - (15300 - 8192) - 100, caps
+    # Minute budget temporarily used up -> short wait, then the same request again
+    _, caps = run([groq_error(429, 12000, 4000, used=9000, retry=0.01), Ok()])
+    assert caps == [8192, 8192]
+    print("[ok] token limits: oversized request explained, output cap shrink, short rate-limit wait")
+
+
 if __name__ == "__main__":
     for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide,
-               check_new_layouts, check_report_images, check_assistant, check_retrieval, check_patch):
+               check_new_layouts, check_report_images, check_assistant, check_retrieval, check_patch, check_token_limits):
         fn()
     print("ALL SMOKE TESTS PASSED")
     sys.exit(0)

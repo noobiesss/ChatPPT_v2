@@ -5,6 +5,7 @@ Edit when: fixing provider/model quirks (reasoning models, token limits), JSON r
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from typing import List, Dict, Optional, Type
@@ -259,36 +260,10 @@ def call_openai_compatible_json(
                 elif is_groq and "qwen3" in model_lower:
                     payload["reasoning_effort"] = "none"
 
-            req = urllib.request.Request(
-                base_url.strip(),
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers,
-                method="POST",
-            )
             try:
-                with urllib.request.urlopen(req, timeout=90) as resp:
-                    resp_data = json.loads(resp.read().decode("utf-8"))
-                    choice0 = (resp_data.get("choices") or [{}])[0]
-                    last_finish_reason = choice0.get("finish_reason")
-                    msg = choice0.get("message") or {}
-                    content = msg.get("content") or ""
-                    cleaned = extract_clean_json_str(content)
-
-                    # If content is empty, check if the model placed JSON inside a reasoning field
-                    if not cleaned or "{" not in cleaned:
-                        reasoning_raw = msg.get("reasoning") or msg.get("reasoning_content") or ""
-                        cand = extract_clean_json_str(reasoning_raw)
-                        if cand and _parses_as_outline(repair_json_str(cand)):
-                            return repair_json_str(cand)
-
-                    if cleaned and "{" in cleaned:
-                        return cleaned
-
-                    # Empty content returned (e.g. json_object mode rejected silently or token limit hit):
-                    # break inner loop to retry without json_object mode.
-                    break
+                resp_data = _post_chat_completion(base_url, headers, payload, model_name)
             except urllib.error.HTTPError as http_err:
-                err_body = http_err.read().decode("utf-8", errors="ignore")
+                err_body = getattr(http_err, "chatppt_body", "")
                 lowered_err = err_body.lower()
                 if http_err.code == 400:
                     # 1. Groq-style "json_validate_failed": repair `failed_generation` if present
@@ -297,8 +272,8 @@ def call_openai_compatible_json(
                     except (ValueError, AttributeError):
                         failed_text = None
                     if isinstance(failed_text, str) and failed_text.strip():
-                        repaired = repair_json_str(extract_clean_json_str(failed_text))
-                        if _parses_as_outline(repaired):
+                        repaired = repair_json_str(extract_clean_json_str(failed_text), response_model)
+                        if _parses_as_outline(repaired, response_model):
                             return repaired
 
                     # 2. Endpoint rejected max_completion_tokens / max_tokens / reasoning_effort:
@@ -320,11 +295,114 @@ def call_openai_compatible_json(
                         break
                 raise RuntimeError(f"Provider API HTTP {http_err.code}: {err_body}") from http_err
 
+            choice0 = (resp_data.get("choices") or [{}])[0]
+            last_finish_reason = choice0.get("finish_reason")
+            msg = choice0.get("message") or {}
+            content = msg.get("content") or ""
+            cleaned = extract_clean_json_str(content)
+
+            # If content is empty, check if the model placed JSON inside a reasoning field
+            if not cleaned or "{" not in cleaned:
+                reasoning_raw = msg.get("reasoning") or msg.get("reasoning_content") or ""
+                cand = repair_json_str(extract_clean_json_str(reasoning_raw), response_model)
+                if cand and _parses_as_outline(cand, response_model):
+                    return cand
+
+            if cleaned and "{" in cleaned:
+                return cleaned
+
+            # Empty content returned (e.g. json_object mode rejected silently or token limit hit):
+            # break inner loop to retry without json_object mode.
+            break
+
     raise RuntimeError(
         f"The model `{model_name}` returned an empty response (finish_reason={last_finish_reason!r}). "
         "It may have exhausted its output token limit during internal reasoning. "
         "Please try again or switch to another model (such as `llama-3.3-70b-versatile`)."
     )
+
+
+# Per-minute token limits (e.g. Groq free tier): the provider counts input + requested output cap
+MIN_USEFUL_OUTPUT_TOKENS = 1500
+TPM_RETRY_MAX_WAIT_S = 30
+_LIMIT_RE = re.compile(r"Limit\s+([\d,]+)\s*,\s*(?:Used\s+([\d,]+)\s*,\s*)?Requested\s+([\d,]+)", re.IGNORECASE)
+_RETRY_IN_RE = re.compile(r"try again in\s+(?:(\d+)m)?\s*([\d.]+)s", re.IGNORECASE)
+
+
+class TokenBudgetError(RuntimeError):
+    """The provider's tokens-per-minute limit cannot fit this request. The message is user-facing Markdown."""
+
+
+def _parse_token_limit_error(body: str) -> Optional[Dict[str, Optional[float]]]:
+    """Read 'Limit 8000, [Used 1200,] Requested 16550 ... try again in 7.5s' from a 413/429 error body."""
+    m = _LIMIT_RE.search(body or "")
+    if not m:
+        return None
+    nums = [int(g.replace(",", "")) if g else None for g in m.groups()]
+    r = _RETRY_IN_RE.search(body)
+    retry_after = (int(r.group(1) or 0) * 60 + float(r.group(2))) if r else None
+    return {"limit": nums[0], "used": nums[1], "requested": nums[2], "retry_after": retry_after}
+
+
+def _token_budget_message(model_name: str, info: Dict[str, Optional[float]], input_tokens: int) -> str:
+    limit = int(info["limit"])
+    if input_tokens < limit - MIN_USEFUL_OUTPUT_TOKENS:
+        wait = info.get("retry_after")
+        when = f"about {wait:.0f} s" if wait else "a minute"
+        return (
+            f"**Rate limit reached** for `{model_name}`: your plan allows {limit:,} tokens per minute and this "
+            f"minute's budget is used up. Wait {when} and send again, ask for fewer slides, "
+            "or switch to a model with a higher per-minute limit."
+        )
+    return (
+        f"**This request is too large for `{model_name}` on your current provider plan.** The plan allows "
+        f"{limit:,} tokens per minute, but the instructions plus your document already need about "
+        f"{input_tokens:,} tokens, before any room for the answer.\n\n"
+        "Try one of these:\n"
+        "- use a shorter document, or paste only the sections you need\n"
+        "- pick a model with a higher per-minute limit (on Groq the limits differ per model), or use Google Gemini\n"
+        "- upgrade your provider plan"
+    )
+
+
+def _post_chat_completion(url: str, headers: Dict[str, str], payload: Dict[str, object], model_name: str) -> dict:
+    """
+    POST one chat completion and return the parsed JSON. Handles per-minute token limits:
+    - the request alone is over the limit only because of the output cap -> lower the cap and retry;
+    - this minute's budget is temporarily used up -> wait once (<= TPM_RETRY_MAX_WAIT_S) and retry;
+    - otherwise raise TokenBudgetError with a readable explanation.
+    Other HTTP errors are re-raised as HTTPError with the body text in `.chatppt_body` (the stream is consumed).
+    """
+    cap_key = next((k for k in ("max_completion_tokens", "max_tokens") if k in payload), None)
+    waited = False
+    for _ in range(3):
+        req = urllib.request.Request(
+            url.strip(), data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as http_err:
+            body = http_err.read().decode("utf-8", errors="ignore")
+            info = _parse_token_limit_error(body) if http_err.code in (413, 429) else None
+            if not info:
+                http_err.chatppt_body = body
+                raise
+            cap = int(payload.get(cap_key, 0)) if cap_key else 0
+            input_tokens = max(int(info["requested"]) - cap, 0)
+            limit = int(info["limit"])
+            if int(info["requested"]) > limit:
+                # The request alone is too big: shrink the output cap if what is left is still useful
+                room = limit - input_tokens - 100
+                if cap_key and cap > room >= MIN_USEFUL_OUTPUT_TOKENS:
+                    payload[cap_key] = room
+                    continue
+            elif not waited and info["retry_after"] is not None and info["retry_after"] <= TPM_RETRY_MAX_WAIT_S:
+                time.sleep(info["retry_after"] + 0.5)
+                waited = True
+                continue
+            raise TokenBudgetError(_token_budget_message(model_name, info, input_tokens)) from http_err
+    raise TokenBudgetError(f"`{model_name}` kept hitting its per-minute token limit. Wait a minute and send again.")
 
 
 def strip_think_tags(raw_text: Optional[str]) -> str:
@@ -403,14 +481,10 @@ def call_openai_compatible_text(
             elif is_groq and "qwen3" in model_lower:
                 payload["reasoning_effort"] = "none"
 
-        req = urllib.request.Request(
-            base_url.strip(), data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
-        )
         try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                resp_data = json.loads(resp.read().decode("utf-8"))
+            resp_data = _post_chat_completion(base_url, headers, payload, model_name)
         except urllib.error.HTTPError as http_err:
-            err_body = http_err.read().decode("utf-8", errors="ignore")
+            err_body = getattr(http_err, "chatppt_body", "")
             lowered_err = err_body.lower()
             if (
                 http_err.code == 400

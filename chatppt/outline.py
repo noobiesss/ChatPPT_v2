@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from chatppt.chat_assistant import build_deck_digest
 from chatppt.images import _derive_fallback_keywords
-from chatppt.llm_client import call_openai_compatible_json, extract_clean_json_str, repair_json_str
+from chatppt.llm_client import TokenBudgetError, call_openai_compatible_json, extract_clean_json_str, repair_json_str
 from chatppt.presets import LLM_PROVIDERS
 from chatppt.prompts import SYSTEM_INSTRUCTION
 from chatppt.retrieval import select_relevant_context
@@ -339,6 +339,8 @@ def _request_outline(
                     response_model=response_model,
                 )
             return response_model.model_validate_json(repair_json_str(raw_json, response_model))
+        except TokenBudgetError:
+            raise  # resending the same request cannot fit the provider's limit
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             if attempt == 0:

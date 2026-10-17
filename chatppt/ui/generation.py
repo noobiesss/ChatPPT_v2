@@ -7,6 +7,7 @@ import streamlit as st
 
 from chatppt.chat_assistant import route_message
 from chatppt.extraction import extract_images_from_report, extract_text_from_uploaded_file
+from chatppt.llm_client import TokenBudgetError
 from chatppt.outline import generate_smart_outline, mentions_slide_count, parse_slide_count_change, patch_slides
 from chatppt.presets import CUSTOM_PROVIDER, REVISION_MAX_CHARS
 from chatppt.schemas import IMAGE_MODE_UNSPLASH_FIRST
@@ -237,6 +238,9 @@ def run_pending(chat: dict, container) -> None:
                             "Review and tweak it below, then render the .pptx.",
                         }
                     )
+                except TokenBudgetError as e:
+                    # Readable explanation (plan limit vs. request size) instead of the raw HTTP body
+                    chat["messages"].append({"role": "assistant", "content": f"⚠️ {e}"})
                 except Exception as e:  # noqa: BLE001
                     err = str(e)
                     err = err if len(err) <= 1200 else err[:1200] + "…"
