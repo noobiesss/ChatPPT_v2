@@ -102,7 +102,7 @@ def settings_dialog() -> None:
 
     cap_col, refresh_col = st.columns([5, 2], vertical_alignment="center")
     cap_col.caption(status)
-    refresh_col.button("🔄 Refresh list", key="set_refresh", on_click=_refresh_model_list, use_container_width=True)
+    refresh_col.button("🔄 Refresh list", key="set_refresh", on_click=_refresh_model_list, width="stretch")
 
     # --- 2. Images (three choices, defaulting to Option 1) ---
     st.divider()
@@ -134,7 +134,7 @@ def settings_dialog() -> None:
     )
 
     c1, c2 = st.columns(2)
-    if c1.button("Save", type="primary", use_container_width=True, key="settings_save"):
+    if c1.button("Save", type="primary", width="stretch", key="settings_save"):
         keys = dict(s["api_keys"])
         for name, value in draft["keys"].items():
             if value:
@@ -162,7 +162,7 @@ def settings_dialog() -> None:
         _refresh_model_list()
         ss.pop("_settings_draft", None)
         st.rerun()
-    if c2.button("Cancel", use_container_width=True, key="settings_cancel"):
+    if c2.button("Cancel", width="stretch", key="settings_cancel"):
         ss.pop("_settings_draft", None)
         st.rerun()
 

@@ -51,7 +51,7 @@
 
 ## 🛠️ Tech Stack
 
-* **Frontend & Conversational UI:** [Streamlit](https://streamlit.io/) (`>=1.46.0`, theme-neutral CSS for light & dark mode)
+* **Frontend & Conversational UI:** [Streamlit](https://streamlit.io/) (`>=1.57.0`, theme-neutral CSS for light & dark mode)
 * **LLM Providers:** [Google GenAI SDK](https://pypi.org/project/google-genai/) + zero-dependency OpenAI-compatible REST client (`urllib.request`) for Groq, OpenAI, DeepSeek, OpenRouter, and custom endpoints
 * **Schema Validation & Structured Output:** [Pydantic v2](https://docs.pydantic.dev/)
 * **Slide & Chart Rendering Engine:** [python-pptx](https://python-pptx.readthedocs.io/)

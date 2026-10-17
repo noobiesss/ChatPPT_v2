@@ -36,7 +36,7 @@ def render_export_block(chat: dict) -> None:
             "Send a short message below (e.g. “make it 6 slides with more charts”) to regenerate from the same source."
         )
 
-    if st.button("🚀 Render presentation (.pptx)", type="primary", use_container_width=True, key=f"render_{cid}"):
+    if st.button("🚀 Render presentation (.pptx)", type="primary", width="stretch", key=f"render_{cid}"):
         if use_custom_tpl and not tpl_bytes:
             st.error("Upload a .pptx template in the 🎨 menu, or switch to a built-in theme.")
         else:
@@ -63,7 +63,7 @@ def render_export_block(chat: dict) -> None:
             data=chat["pptx_bytes"],
             file_name="ChatPPT_V2_Presentation.pptx",
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            use_container_width=True,
+            width="stretch",
             key=f"dl_{cid}_{chat['gen']}",
         )
 

@@ -56,7 +56,7 @@ def render_composer(chat: dict) -> None:
             widths = [max(len(lbl), 8) + 5 for lbl in (attach_label, tpl_label, model_label, deck_label, send_label)]
             c_file, c_tpl, c_model, c_deck, c_send = st.columns(widths, vertical_alignment="center")
 
-            with c_file.popover(attach_label, use_container_width=True):
+            with c_file.popover(attach_label, width="stretch"):
                 report = st.file_uploader(
                     "Report file",
                     type=["pdf", "docx", "txt", "md"],
@@ -65,7 +65,7 @@ def render_composer(chat: dict) -> None:
                 )
                 st.caption("PDF · DOCX · TXT · MD")
 
-            with c_tpl.popover(tpl_label, use_container_width=True):
+            with c_tpl.popover(tpl_label, width="stretch"):
                 st.radio("Styling", ["Built-in 16:9 theme", "Custom .pptx template"], key="opt_tpl_mode")
                 if ss.get("opt_tpl_mode") == "Custom .pptx template":
                     tpl_upload = st.file_uploader(
@@ -87,7 +87,7 @@ def render_composer(chat: dict) -> None:
                             f"✅ Loaded `{ss['custom_tpl_name']}` · Font: `{info['font']}` · "
                             f"Accent: `{info['accent']}` · BG: `{info['bg']}`"
                         )
-                        if st.button("🗑️ Remove template", key="clear_tpl_btn", use_container_width=True):
+                        if st.button("🗑️ Remove template", key="clear_tpl_btn", width="stretch"):
                             ss["custom_tpl_bytes"] = None
                             ss["custom_tpl_name"] = None
                             st.rerun()
@@ -101,16 +101,16 @@ def render_composer(chat: dict) -> None:
                 else:
                     st.selectbox("Color palette", list(BUILTIN_THEMES.keys()), key="opt_theme")
 
-            if c_model.button(model_label, key="model_btn", use_container_width=True, help="Change provider / model"):
+            if c_model.button(model_label, key="model_btn", width="stretch", help="Change provider / model"):
                 open_settings()
 
-            with c_deck.popover(deck_label, use_container_width=True):
+            with c_deck.popover(deck_label, width="stretch"):
                 num_slides = st.slider("Number of slides", 4, 20, key="opt_slides")
                 language = st.selectbox("Output language", LANGUAGE_OPTIONS, key="opt_language")
                 tone_label = st.selectbox("Tone", list(TONE_OPTIONS.keys()), key="opt_tone")
 
             send = c_send.button(
-                send_label, type="primary", use_container_width=True, key=f"send_{cid}", disabled=busy
+                send_label, type="primary", width="stretch", key=f"send_{cid}", disabled=busy
             )
         st.markdown(
             '<div class="composer-note">ChatPPT can make mistakes. Please check responses.</div>',
