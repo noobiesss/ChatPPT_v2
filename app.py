@@ -6,6 +6,7 @@ Edit when: changing the overall page flow.
 
 import streamlit as st
 
+from chatppt.ui.common import LOGO_ICON_PATH
 from chatppt.ui.composer import render_composer
 from chatppt.ui.css import inject_css
 from chatppt.ui.export import render_deck_block
@@ -18,7 +19,7 @@ from chatppt.ui.state import init_state
 def main():
     st.set_page_config(
         page_title="ChatPPT V2",
-        page_icon=":material/slideshow:",
+        page_icon=LOGO_ICON_PATH,
         layout="wide",
         initial_sidebar_state="expanded",
     )

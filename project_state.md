@@ -15,7 +15,7 @@ Commit Log: `feat(layout,images): timeline_flow and comparison_table layouts; re
 - After every change run `python smoke_test.py` (offline, no API keys) and report the result; give an updated `project_state.md` when state changes.
 
 ## 1. Goal & stack
-"ChatPPT V2": Streamlit web app that turns reports (`.pdf/.docx/.txt/.md`) or pasted text into consulting-grade `.pptx` decks, and also answers questions about the source/deck in the same chat. Python 3, Streamlit >=1.57 (needed for `width="stretch"`; `use_container_width` is deprecated, never use it), `google-genai`, Pydantic v2, `python-pptx`, `pypdf`, `python-docx`, `Pillow`, `urllib`. Files: `app.py`, `chatppt/` package, `smoke_test.py`, `requirements.txt`, `README.md`, `.gitignore`, `.streamlit/config.toml`. Run: `streamlit run app.py`.
+"ChatPPT V2": Streamlit web app that turns reports (`.pdf/.docx/.txt/.md`) or pasted text into consulting-grade `.pptx` decks, and also answers questions about the source/deck in the same chat. Python 3, Streamlit >=1.57 (needed for `width="stretch"`; `use_container_width` is deprecated, never use it), `google-genai`, Pydantic v2, `python-pptx`, `pypdf`, `python-docx`, `Pillow`, `urllib`. Files: `app.py`, `chatppt/` package, `assets/` (logo), `smoke_test.py`, `requirements.txt`, `README.md`, `.gitignore`, `.streamlit/config.toml`. Run: `streamlit run app.py`.
 
 ## 2. File map
 Dependencies only point DOWN: `schemas/presets` -> `extraction/retrieval/prompts/llm_client` -> `chat_assistant` -> `outline/images` -> `pptx_template` -> `pptx_render` -> `pptx_build` -> `ui/*` -> `app.py`. Core modules never import UI code (may use `st.cache_data`).
@@ -45,6 +45,7 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/retrieval/prompts
 | `chatppt/ui/outline_editor.py` + `editor_text.py` | per-slide editor (+ `_render_report_image_picker`) + text<->data helpers (points, KPIs, `*_steps_*`, `*_table_*`) |
 | `chatppt/ui/export.py` | deck block: Undo / Redo / Save project toolbar (`_render_deck_toolbar`), editor, render/download |
 | `chatppt/ui/generation.py` | `handle_send`, `_prepare_generation`, `_run_patch`, `run_pending` |
+| `assets/logo.png`, `assets/logo_square.png` | pixel-art brand logo (520x440 on a 20 px grid) + square version; paths `LOGO_PATH`, `LOGO_ICON_PATH` in `ui/common.py` |
 | `chatppt/ui/composer.py` + `common.py` | bottom input bar (Attach, Template, Model, `N slides` popover, **Send**); `common.py` holds `_short`, `ASSISTANT_AVATAR`, `TPL_*` option values, `IMAGE_MODE_LABELS/HELP` |
 
 **Task -> files to upload:**
@@ -77,7 +78,7 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/retrieval/prompts
 - **Custom template**: inherits widescreen-scaled backgrounds, sample-slide fonts, theme/sampled colors; strips master/layout/slide decorations; WCAG white-text guard.
 - **Token limits** (`_post_chat_completion`, used by both OpenAI-compatible calls): providers like Groq free tier count input + requested output cap against tokens-per-minute (gpt-oss-120b: 8000; our cap is 8192, fixed prompt + schema is ~3.1k tokens). On 413/429 with `Limit X, [Used Y,] Requested Z`: request too big only because of the cap -> retry with cap = room if >= 1500; minute budget used up -> wait once (<= 30 s); else `TokenBudgetError` (readable Markdown, shown as a ⚠️ chat message, never retried by `_request_outline`).
 - **LLM quirks**: reasoning models (`gpt-oss`, Groq `qwen3`, `deepseek-reasoner`) use 8192 tokens, `reasoning_effort` low/none, `<think>` stripping, `message.reasoning` fallback, retry without optional params.
-- **UI conventions** (Streamlit skill best practices): `width="stretch"` (never `use_container_width`); 2-5 options -> `st.segmented_control(required=True, format_func=...)` keeping the old stored values (template mode/colors constants and `IMAGE_MODE_LABELS` in `ui/common.py`); Material icons via `icon=":material/...:"` (not emoji; keeps composer width math on plain labels); sentence-case labels; `ASSISTANT_AVATAR`, `EDIT_MARK` (generation) are the shared markers.
+- **UI conventions** (Streamlit skill best practices): `width="stretch"` (never `use_container_width`); 2-5 options -> `st.segmented_control(required=True, format_func=...)` keeping the old stored values (template mode/colors constants and `IMAGE_MODE_LABELS` in `ui/common.py`); Material icons via `icon=":material/...:"` (not emoji; keeps composer width math on plain labels); sentence-case labels; `ASSISTANT_AVATAR` (= square logo), `EDIT_MARK` (generation) are the shared markers. Logo: `st.logo` in the sidebar (square icon when collapsed), `page_icon`, chat avatar, hero (data URI); CSS keeps it `image-rendering: pixelated`.
 - **UI**: theme-neutral CSS; `.streamlit/config.toml` defines `[theme.light]`/`[theme.dark]` (accent #C96442; never put colors in the bare `[theme]` table, it locks one mode); 50 MB upload limit there.
 
 ## 4. Known constraints / gotchas
@@ -117,3 +118,4 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/retrieval/prompts
 | 2026-10-17 | Fix: Groq HTTP 413 'Request too large' (TPM) -> token-limit handling in `llm_client` (cap shrink, short wait, `TokenBudgetError` message); JSON recovery paths now validate against the requested schema (SlidePatch); smoke test `check_token_limits` |
 | 2026-10-17 | UI: `use_container_width` -> `width="stretch"` (streamlit>=1.57); radios / 2-5 option selects -> `st.segmented_control`; emoji -> Material icons; sentence-case labels (verified with `AppTest`: no exceptions or deprecation warnings) |
 | 2026-10-17 | Feature: Undo/Redo outline history + .json project save/open (`deck_ops`, `project_io`); no-token slide move/insert/delete in the editor; live HTML/CSS wireframe preview with overflow warnings (`preview.py`); fix: sidebar delete-chat icon was clipped |
+| 2026-10-18 | Brand: pixel-art logo (`assets/`) as sidebar logo, favicon, assistant avatar and hero image |

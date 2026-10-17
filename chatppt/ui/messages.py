@@ -3,15 +3,25 @@
 Edit when: changing the welcome screen or how chat messages look.
 """
 
+import base64
+from functools import lru_cache
+
 import streamlit as st
 
-from chatppt.ui.common import ASSISTANT_AVATAR
+from chatppt.ui.common import ASSISTANT_AVATAR, LOGO_PATH
+
+
+@lru_cache(maxsize=1)
+def _logo_data_uri() -> str:
+    with open(LOGO_PATH, "rb") as f:
+        return "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
 
 
 def render_hero() -> None:
     st.markdown(
-        """
+        f"""
         <div class="hero">
+          <img class="hero-logo" src="{_logo_data_uri()}" alt="ChatPPT logo">
           <h1>What are we presenting today?</h1>
           <p>Drop in a report or paste your notes, and I'll design a consulting-style deck.</p>
           <div class="steps">

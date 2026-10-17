@@ -36,6 +36,10 @@ header[data-testid="stHeader"] { background: transparent; }
 
 /* Hero (empty chat state) */
 .hero { text-align: center; padding: 3rem 0 1.5rem; }
+.hero-logo { width: 104px; height: auto; margin-bottom: 0.9rem; image-rendering: pixelated; }
+/* Pixel-art logo: keep hard pixel edges when the browser scales it down */
+[data-testid="stLogo"], [data-testid="stSidebarHeader"] img, [data-testid="stChatMessageAvatarCustom"] img,
+[data-testid="stChatMessage"] img[alt="assistant avatar"] { image-rendering: pixelated; }
 .hero h1 { font-size: 2.1rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 0.4rem; }
 .hero p { opacity: 0.7; margin: 0; }
 .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.8rem; margin: 1.6rem 0 0.5rem; }

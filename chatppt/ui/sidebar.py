@@ -6,7 +6,7 @@ Edit when: changing the sidebar.
 import streamlit as st
 
 from chatppt.project_io import ProjectFileError, load_project
-from chatppt.ui.common import ASSISTANT_AVATAR
+from chatppt.ui.common import LOGO_ICON_PATH, LOGO_PATH
 from chatppt.ui.settings import open_settings
 from chatppt.ui.state import create_chat, delete_chat, restore_project
 
@@ -55,7 +55,9 @@ def _render_open_project() -> None:
 def render_sidebar() -> None:
     ss = st.session_state
     with st.sidebar:
-        st.markdown(f"### {ASSISTANT_AVATAR} ChatPPT")
+        # Brand logo in the top-left corner; the square icon is shown when the sidebar is collapsed
+        st.logo(LOGO_PATH, size="large", icon_image=LOGO_ICON_PATH)
+        st.markdown("### ChatPPT")
         if st.button("New chat", icon=":material/add:", key="new_chat_btn", width="stretch"):
             create_chat()
             st.rerun()

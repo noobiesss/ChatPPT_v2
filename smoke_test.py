@@ -23,7 +23,13 @@ def check_imports() -> None:
     for name in names:
         importlib.import_module(name)
     importlib.import_module("app")
-    print(f"[ok] imported {len(names)} modules + app")
+    from PIL import Image
+
+    from chatppt.ui.common import LOGO_ICON_PATH, LOGO_PATH
+
+    with Image.open(LOGO_PATH) as logo, Image.open(LOGO_ICON_PATH) as icon:
+        assert logo.mode == "RGBA" and icon.size[0] == icon.size[1], "logo assets missing or malformed"
+    print(f"[ok] imported {len(names)} modules + app; logo assets present")
 
 
 def sample_slides() -> list:
