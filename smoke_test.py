@@ -290,6 +290,99 @@ def check_patch() -> None:
     print("[ok] targeted patch: only target slides replaced, closing guard, image mode kept")
 
 
+def check_history_and_projects() -> None:
+    from chatppt.deck_ops import HISTORY_MAX, can_redo, can_undo, push_history, redo, undo
+    from chatppt.project_io import ProjectFileError, export_project, load_project
+
+    chat = {"slides": sample_slides()}
+    push_history(chat)
+    chat["slides"][2]["action_title"] = "Edited after snapshot"  # snapshots must be deep copies
+    v2 = chat["slides"]
+    assert can_undo(chat) and not can_redo(chat)
+    assert undo(chat)[2]["action_title"] == "Bullet cards title" and can_redo(chat)
+    assert redo(chat) is not None and chat["slides"][2]["action_title"] == "Edited after snapshot" and chat["slides"] == v2
+    push_history(chat)
+    undo(chat)
+    push_history(chat)  # a new change clears the redo stack
+    assert not can_redo(chat)
+    for _ in range(HISTORY_MAX + 5):
+        push_history(chat)
+    assert len(chat["slides_history"]) == HISTORY_MAX
+    assert undo({"slides": None}) is None
+
+    # Project round trip: outline, messages, figures and safe settings survive; secrets never leave
+    deck = sample_slides()
+    deck[7]["image_source_mode"], deck[7]["report_image_index"] = "Report Images First (Fallback to Unsplash / AI)", 0
+    src_chat = {"title": "Q3 review", "slides": deck, "source_text": "SRC", "messages": [{"role": "user", "content": "hi"}],
+                "report_images": [{"name": "fig", "width": 400, "height": 300, "bytes": b"\x89PNGdata"}]}
+    settings = {"api_keys": {"Groq": "gsk_SECRET"}, "unsplash_key": "UNSPLASH_SECRET", "provider": "Google Gemini",
+                "models": {"Google Gemini": "gemini-x"}, "image_mode": "Reserve Photo Placeholder", "use_imagen": True}
+    raw = export_project(src_chat, settings, {"opt_slides": 11, "opt_theme": "Corporate Blue", "opt_tone": "nope"})
+    assert b"SECRET" not in raw
+    loaded = load_project(raw)
+    out = loaded["chat"]
+    assert [s["action_title"] for s in out["slides"]] == [s["action_title"] for s in deck]
+    assert out["slides"][9]["table_rows"] == deck[9]["table_rows"] and out["slides"][7]["report_image_index"] == 0
+    assert out["report_images"][0]["bytes"] == b"\x89PNGdata" and out["source_text"] == "SRC"
+    assert loaded["settings"] == {"provider": "Google Gemini", "models": {"Google Gemini": "gemini-x"},
+                                  "image_mode": "Reserve Photo Placeholder", "use_imagen": True}
+    assert loaded["options"] == {"opt_slides": 11, "opt_theme": "Corporate Blue"}  # invalid tone dropped
+    for bad in (b"not json", b'{"format": "other"}', raw.replace(b'"layout_type": "cover"', b'"layout_type": "bogus"', 1)):
+        try:
+            load_project(bad)
+            raise AssertionError("expected ProjectFileError")
+        except ProjectFileError:
+            pass
+    print("[ok] history (deep snapshots, redo cleared, capped) + project save/load (no secrets, validated)")
+
+
+def check_structure_ops() -> None:
+    from chatppt.deck_ops import can_delete, can_move, delete_slide, insert_slide, move_slide
+
+    deck = sample_slides()  # 11 slides: cover ... closing
+    titles = lambda d: [s["action_title"] for s in d]  # noqa: E731
+    moved = move_slide(deck, 3, -1)
+    assert titles(moved)[2:4] == ["Three cards title", "Bullet cards title"]
+    assert [s["slide_number"] for s in moved] == list(range(1, 12))
+    # The cover stays first and the closing slide stays last
+    assert not can_move(deck, 1, -1) and not can_move(deck, 0, 1) and not can_move(deck, 9, 1) and not can_move(deck, 10, -1)
+    assert move_slide(deck, 1, -1)[0]["layout_type"] == "cover"
+    assert not can_delete(deck, 0) and can_delete(deck, 10)
+    shorter = delete_slide(deck, 2)
+    assert len(shorter) == 10 and "Bullet cards title" not in titles(shorter) and shorter[-1]["slide_number"] == 10
+    # Inserting after the closing slide still lands before it; the blank slide is fully sanitized
+    grown, pos = insert_slide(deck, 10, "Reserve Photo Placeholder")
+    assert len(grown) == 12 and pos == 10 and grown[-1]["layout_type"] == "closing"
+    assert grown[pos]["layout_type"] == "bullet_cards" and grown[pos]["kpis"] and grown[pos]["table_rows"]
+    assert len(insert_slide([dict(s) for s in deck * 2][:20], 3, "x")[0]) == 20  # 20-slide cap
+    print("[ok] structure ops: move/insert/delete keep cover first and closing last, renumbered, capped")
+
+
+def check_preview() -> None:
+    import copy
+
+    from chatppt.preview import overflows, render_slide_preview
+    from chatppt.presets import BUILTIN_THEMES
+
+    theme = BUILTIN_THEMES["Corporate Blue"]
+    deck = copy.deepcopy(sample_slides())
+    for i, s in enumerate(deck):
+        html_out, warnings = render_slide_preview(s, theme, i, len(deck))
+        assert html_out.startswith('<div class="cpv-slide"') and not warnings, (s["layout_type"], warnings)
+    # Overflow is caught for long text (Latin and CJK) and short text is not flagged
+    assert not overflows([{"text": "Short heading", "pt": 17}], 10.5, 1.2)
+    long_detail = copy.deepcopy(deck[2])
+    long_detail["points"][0]["detail"] = "很长的说明文字。" * 30
+    assert render_slide_preview(long_detail, theme, 2, 11)[1] == ["Card 1 text overflows its card."]
+    long_title = copy.deepcopy(deck[3])
+    long_title["action_title"] = "A very long action title that keeps going " * 4
+    assert "Title is too long" in render_slide_preview(long_title, theme, 3, 11)[1][0]
+    # User text is escaped (st.html is not iframed)
+    evil = dict(deck[2], action_title="<script>alert(1)</script>")
+    assert "<script>" not in render_slide_preview(evil, theme, 2, 11)[0]
+    print("[ok] preview: all 11 layouts render, overflow estimate (Latin + CJK), HTML escaped")
+
+
 def check_token_limits() -> None:
     import json
     import urllib.error
@@ -348,7 +441,8 @@ def check_token_limits() -> None:
 
 if __name__ == "__main__":
     for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide,
-               check_new_layouts, check_report_images, check_assistant, check_retrieval, check_patch, check_token_limits):
+               check_new_layouts, check_report_images, check_assistant, check_retrieval, check_patch, check_token_limits,
+               check_history_and_projects, check_structure_ops, check_preview):
         fn()
     print("ALL SMOKE TESTS PASSED")
     sys.exit(0)

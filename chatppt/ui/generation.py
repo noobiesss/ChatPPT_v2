@@ -6,6 +6,7 @@ Edit when: changing what happens after the user presses Send.
 import streamlit as st
 
 from chatppt.chat_assistant import route_message
+from chatppt.deck_ops import push_history
 from chatppt.extraction import extract_images_from_report, extract_text_from_uploaded_file
 from chatppt.llm_client import TokenBudgetError
 from chatppt.outline import generate_smart_outline, mentions_slide_count, parse_slide_count_change, patch_slides
@@ -158,7 +159,9 @@ def _run_patch(chat: dict, p: dict, targets: list) -> bool:
             )
         except Exception:  # noqa: BLE001 - fall back to the full regeneration
             return False
+    push_history(chat)  # the previous outline stays one Undo away
     chat["slides"] = slides
+    chat["focus_slide"] = targets[0] - 1  # open the edited slide in the editor
     chat["gen"] += 1  # new editor widget keys => the editor shows the patched slides
     chat["pptx_bytes"] = None
     if 1 in targets and slides[0].get("action_title"):
@@ -226,7 +229,9 @@ def run_pending(chat: dict, container) -> None:
                         enforce_count=p.get("enforce_count", True),
                         default_image_mode=default_img_mode,
                     )
+                    push_history(chat)
                     chat["slides"] = slides
+                    chat["focus_slide"] = 0
                     chat["gen"] += 1
                     chat["pptx_bytes"] = None
                     if slides and slides[0].get("action_title"):

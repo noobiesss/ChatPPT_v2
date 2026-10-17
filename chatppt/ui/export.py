@@ -1,16 +1,22 @@
-"""Deck block: outline editor + 'Render deck' / download controls.
+"""Deck block: undo / redo / save-project toolbar, outline editor, 'Render deck' / download controls.
 
 Edit when: changing export options, the render button, or the download flow.
 """
 
+import re
+from typing import Optional
+
 import streamlit as st
 
+from chatppt.deck_ops import can_redo, can_undo, redo, undo
 from chatppt.pptx_build import build_presentation_pptx
+from chatppt.project_io import OPTION_KEYS, export_project
 from chatppt.pptx_template import inspect_template_summary
 from chatppt.presets import BUILTIN_THEMES
 from chatppt.schemas import IMAGE_MODE_UNSPLASH_FIRST
 from chatppt.ui.common import ASSISTANT_AVATAR, TPL_COLORS_FROM_TEMPLATE, TPL_MODE_CUSTOM
 from chatppt.ui.outline_editor import render_outline_editor
+from chatppt.ui.state import mark_slides_changed
 
 
 def render_export_block(chat: dict) -> None:
@@ -74,9 +80,49 @@ def render_export_block(chat: dict) -> None:
         )
 
 
+def _render_deck_toolbar(chat: dict) -> Optional[str]:
+    """Undo / Redo / Save project row above the outline. Returns "undo" / "redo" when clicked."""
+    ss = st.session_state
+    cid = chat["id"]
+    # Captured now: the download callable runs on another thread, where Session State is not available
+    settings = dict(ss.settings)
+    options = {k: ss.get(k) for k in OPTION_KEYS}
+    action = None
+    with st.container(horizontal=True, vertical_alignment="center"):
+        if st.button("Undo", icon=":material/undo:", key=f"undo_{cid}", disabled=not can_undo(chat),
+                     help="Go back to the previous outline version (before the last AI change or slide move)."):
+            action = "undo"
+        if st.button("Redo", icon=":material/redo:", key=f"redo_{cid}", disabled=not can_redo(chat),
+                     help="Re-apply the version you just undid."):
+            action = "redo"
+        st.download_button(
+            "Save project",
+            data=lambda: export_project(chat, settings, options),
+            file_name=f"{_safe_filename(chat.get('title'))}.chatppt.json",
+            mime="application/json",
+            icon=":material/save:",
+            on_click="ignore",
+            key=f"save_project_{cid}",
+            help="Download the outline, conversation, source text and report figures as a .json project "
+            "(API keys are not included). Open it again from the sidebar after a page refresh.",
+        )
+    return action
+
+
+def _safe_filename(title: Optional[str]) -> str:
+    cleaned = re.sub(r"[^\w\-]+", "_", title or "", flags=re.UNICODE).strip("_")
+    return cleaned[:40] or "ChatPPT_project"
+
+
 def render_deck_block(chat: dict) -> None:
     with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
         st.markdown("**Slide outline** — expand any slide to edit it, then render the deck.")
+        action = _render_deck_toolbar(chat)
+        # The editor runs first so text typed right before the click is part of the snapshot
         render_outline_editor(chat)
+        if action:
+            (undo if action == "undo" else redo)(chat)
+            mark_slides_changed(chat)
+            st.rerun()
         st.divider()
         render_export_block(chat)

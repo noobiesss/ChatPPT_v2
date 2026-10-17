@@ -325,6 +325,16 @@ def extract_template_style(
     return base_theme
 
 
+@st.cache_data(show_spinner=False, max_entries=4)
+def template_theme_for_preview(template_bytes: bytes, fallback_theme_name: str, use_template_colors: bool) -> Dict[str, object]:
+    """Theme dict (colors + fonts) of an uploaded template, cached for the per-rerun wireframe previews."""
+    try:
+        prs = Presentation(io.BytesIO(template_bytes))
+        return extract_template_style(prs, fallback_theme_name=fallback_theme_name, use_template_colors=use_template_colors)
+    except Exception:  # noqa: BLE001 - a broken template previews with the fallback palette
+        return dict(BUILTIN_THEMES.get(fallback_theme_name, BUILTIN_THEMES["Corporate Blue"]))
+
+
 @st.cache_data(show_spinner=False)
 def inspect_template_summary(template_bytes: bytes) -> Dict[str, str]:
     """Return a concise summary of an uploaded .pptx template (slide count, fonts, accent color)."""

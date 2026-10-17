@@ -24,6 +24,8 @@ header[data-testid="stHeader"] { background: transparent; }
     justify-content: center !important;
 }
 .st-key-new_chat_btn button:hover { background: #B5573A !important; }
+/* Narrow delete-chat column: center the icon instead of the left-aligned chat-button padding */
+[data-testid="stSidebar"] [class*="st-key-del_"] button { justify-content: center; padding: 0.45rem 0; min-width: 0; }
 .st-key-settings_btn button {
     border: 1px solid rgba(128, 128, 128, 0.40) !important; justify-content: center !important;
 }

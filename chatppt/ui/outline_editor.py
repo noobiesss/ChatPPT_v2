@@ -1,14 +1,31 @@
-"""Per-slide outline editor (expanders, layout-specific fields).
+"""Per-slide outline editor (expanders, layout-specific fields) with move / insert / delete buttons and a live
+wireframe preview per slide.
 
-Edit when: changing what can be edited on each slide before rendering.
+Edit when: changing what can be edited on each slide before rendering, the per-slide structure buttons,
+or how the preview is placed.
 """
+
+from typing import Optional
 
 import streamlit as st
 
+from chatppt.deck_ops import can_delete, can_insert, can_move, delete_slide, insert_slide, move_slide, push_history
 from chatppt.images import assign_report_images
 from chatppt.outline import normalize_table, normalize_timeline_steps
-from chatppt.schemas import ChartType, IMAGE_MODE_OPTIONS, IMAGE_MODE_REPORT_FIRST, IMAGE_MODE_UNSPLASH_FIRST, LayoutType, VisualStyle
-from chatppt.ui.common import IMAGE_MODE_HELP, IMAGE_MODE_LABELS
+from chatppt.pptx_template import template_theme_for_preview
+from chatppt.presets import BUILTIN_THEMES
+from chatppt.preview import PREVIEW_CSS, render_slide_preview
+from chatppt.schemas import (
+    ChartType,
+    IMAGE_MODE_OPTIONS,
+    IMAGE_MODE_PLACEHOLDER,
+    IMAGE_MODE_REPORT_FIRST,
+    IMAGE_MODE_UNSPLASH_FIRST,
+    LayoutType,
+    VisualStyle,
+)
+from chatppt.ui.common import IMAGE_MODE_HELP, IMAGE_MODE_LABELS, TPL_COLORS_FROM_TEMPLATE, TPL_MODE_CUSTOM
+from chatppt.ui.state import mark_slides_changed
 from chatppt.ui.editor_text import (
     format_kpis_for_editor,
     format_points_for_editor,
@@ -46,6 +63,58 @@ def _render_report_image_picker(chat: dict, slide: dict, idx: int, kp: str, defa
         st.image(images[shown]["bytes"], width=240, caption=f"Figure #{shown + 1} · {images[shown]['name']}")
 
 
+def _render_slide_ops(container, slides: list, idx: int, kp: str) -> Optional[str]:
+    """Icon buttons next to a slide's expander. Returns the clicked operation, if any."""
+    clicked = None
+    with container.container(horizontal=True, gap="small"):
+        for op, icon, tip, enabled in (
+            ("up", ":material/arrow_upward:", "Move up (the cover always stays first)", can_move(slides, idx, -1)),
+            ("down", ":material/arrow_downward:", "Move down (a closing slide always stays last)", can_move(slides, idx, 1)),
+            ("insert", ":material/add:", "Insert a blank slide after this one", can_insert(slides)),
+            ("delete", ":material/delete:", "Delete this slide (the cover cannot be deleted)", can_delete(slides, idx)),
+        ):
+            if st.button(icon, key=f"{kp}{op}_{idx}", help=tip, type="tertiary", disabled=not enabled):
+                clicked = op
+    return clicked
+
+
+def _preview_theme() -> tuple:
+    """(theme dict, is_builtin) matching what 'Render presentation' will use right now."""
+    ss = st.session_state
+    theme_name = ss.get("opt_theme") or next(iter(BUILTIN_THEMES))
+    if ss.get("opt_tpl_mode") == TPL_MODE_CUSTOM and ss.get("custom_tpl_bytes"):
+        use_colors = ss.get("opt_tpl_color_mode", TPL_COLORS_FROM_TEMPLATE) == TPL_COLORS_FROM_TEMPLATE
+        return template_theme_for_preview(ss["custom_tpl_bytes"], theme_name, use_colors), False
+    return BUILTIN_THEMES.get(theme_name, BUILTIN_THEMES["Corporate Blue"]), True
+
+
+def _image_label(slide: dict, idx: int, assignment: dict, default_img_mode: str) -> str:
+    """What the image box of an image_split slide will contain when rendered."""
+    mode = slide.get("image_source_mode") or default_img_mode
+    if mode == IMAGE_MODE_PLACEHOLDER:
+        return "Photo placeholder"
+    if mode == IMAGE_MODE_REPORT_FIRST and idx in assignment:
+        return f"Report figure #{assignment[idx] + 1}"
+    return "Unsplash / AI image"
+
+
+def _apply_slide_op(chat: dict, op: str, idx: int, image_mode: str) -> None:
+    """Apply a structure edit (one Undo away), keep the edited slide open, sync the slider, rerun."""
+    push_history(chat)
+    slides = chat["slides"]
+    if op == "up":
+        chat["slides"], focus = move_slide(slides, idx, -1), idx - 1
+    elif op == "down":
+        chat["slides"], focus = move_slide(slides, idx, 1), idx + 1
+    elif op == "insert":
+        chat["slides"], focus = insert_slide(slides, idx, image_mode)
+    else:
+        chat["slides"], focus = delete_slide(slides, idx), max(0, idx - 1)
+    chat["focus_slide"] = focus
+    mark_slides_changed(chat)
+    st.rerun()
+
+
 def render_outline_editor(chat: dict) -> None:
     """Interactive per-slide editor. Widget keys are scoped by chat id + generation counter."""
     kp = f"{chat['id']}_{chat['gen']}_"
@@ -55,12 +124,33 @@ def render_outline_editor(chat: dict) -> None:
         default_img_mode = IMAGE_MODE_UNSPLASH_FIRST
 
     updated_slides = []
+    pending_op = None
+    focus = chat.get("focus_slide", 0)
+    total = len(chat["slides"])
+    theme, builtin = _preview_theme()
+    figures = assign_report_images(chat["slides"], len(chat.get("report_images") or []), default_img_mode)
+    st.html(PREVIEW_CSS)  # style-only: Streamlit puts it in the event container, it takes no space
 
     for idx, slide in enumerate(chat["slides"]):
         current_layout = slide.get("layout_type", LayoutType.BULLET_CARDS.value)
         expander_label = f"Slide {idx + 1} [{current_layout.upper()}] — {slide.get('action_title', '')}"
 
-        with st.expander(expander_label, expanded=(idx < 1)):
+        c_exp, c_ops = st.columns([13, 3], vertical_alignment="top")
+        op = _render_slide_ops(c_ops, chat["slides"], idx, kp)
+        if op:
+            pending_op = (op, idx)
+
+        # Overflow estimate from the last saved values marks the slide in the collapsed list too
+        _, old_warnings = render_slide_preview(slide, theme, idx, total, builtin)
+        exp = c_exp.expander(
+            expander_label,
+            expanded=(idx == focus),
+            icon=":material/warning:" if old_warnings else None,
+            key=f"{kp}exp_{idx}",
+            on_change="rerun",  # tracks .open, so closed slides skip building their preview
+        )
+        with exp:
+            preview_slot = st.container(width=560)
             top_c1, top_c2 = st.columns([1, 3])
             with top_c1:
                 new_layout = st.selectbox(
@@ -290,6 +380,18 @@ def render_outline_editor(chat: dict) -> None:
                     key=f"{kp}takeaway_{idx}",
                 )
 
+            if exp.open:
+                # Drawn after every field was read, so the preview shows what was just typed
+                html_preview, warnings = render_slide_preview(
+                    slide, theme, idx, total, builtin, _image_label(slide, idx, figures, default_img_mode)
+                )
+                preview_slot.html(html_preview)
+                for warning in warnings:
+                    preview_slot.caption(f":material/warning: {warning}")
+
             updated_slides.append(slide)
 
     chat["slides"] = updated_slides
+    # Applied after every field was read, so text typed right before the click is kept
+    if pending_op:
+        _apply_slide_op(chat, *pending_op, default_img_mode)

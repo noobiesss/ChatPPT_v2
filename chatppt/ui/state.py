@@ -1,12 +1,13 @@
 """Streamlit session-state setup: chats and default settings.
 
-Edit when: adding a session key, a default setting, or changing chat creation/deletion.
+Edit when: adding a session key, a default setting, changing chat creation/deletion, or restoring projects.
 """
 
 import uuid
 
 import streamlit as st
 
+from chatppt.outline import MAX_SLIDES, MIN_SLIDES
 from chatppt.presets import CUSTOM_PROVIDER, LLM_PROVIDERS
 from chatppt.schemas import IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST
 
@@ -26,9 +27,37 @@ def create_chat() -> None:
         "gen": 0,
         "composer_ver": 0,
         "pending": None,
+        "slides_history": [],  # undo stack of outline snapshots (see chatppt/deck_ops.py)
+        "slides_future": [],  # redo stack
     }
     ss.chat_order.insert(0, cid)
     ss.active_chat = cid
+
+
+def mark_slides_changed(chat: dict) -> None:
+    """After the outline was replaced (undo/redo, restore, structure edit): fresh editor widgets, stale .pptx
+    dropped, and the slide-count slider follows the deck (applied by the composer before the slider exists)."""
+    chat["gen"] += 1
+    chat["pptx_bytes"] = None
+    if chat.get("slides"):
+        st.session_state["opt_slides_sync"] = max(MIN_SLIDES, min(MAX_SLIDES, len(chat["slides"])))
+
+
+def restore_project(loaded: dict) -> None:
+    """Open a validated project (chatppt.project_io.load_project) as a new active chat.
+    Must run in a widget callback: composer options can only be set before their widgets exist."""
+    ss = st.session_state
+    create_chat()
+    chat = ss.chats[ss.active_chat]
+    chat.update(loaded["chat"])
+    settings = dict(loaded["settings"])
+    ss.settings["models"].update(settings.pop("models", {}))
+    ss.settings.update(settings)
+    for key, value in loaded["options"].items():
+        if key == "opt_slides":
+            ss["opt_slides_sync"] = value
+        else:
+            ss[key] = value
 
 
 def delete_chat(cid: str) -> None:
