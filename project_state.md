@@ -42,7 +42,7 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/retrieval/prompts
 | `chatppt/ui/outline_editor.py` + `editor_text.py` | per-slide editor (+ `_render_report_image_picker`) + text<->data helpers (points, KPIs, `*_steps_*`, `*_table_*`) |
 | `chatppt/ui/export.py` | deck block: editor + render/download (user presses a separate render button) |
 | `chatppt/ui/generation.py` | `handle_send`, `_prepare_generation`, `_run_patch`, `run_pending` |
-| `chatppt/ui/composer.py` + `common.py` | bottom input bar (Attach, Template, Model, `⚙ N slides` popover, **Send ➤**) |
+| `chatppt/ui/composer.py` + `common.py` | bottom input bar (Attach, Template, Model, `N slides` popover, **Send**); `common.py` holds `_short`, `ASSISTANT_AVATAR`, `TPL_*` option values, `IMAGE_MODE_LABELS/HELP` |
 
 **Task -> files to upload:**
 - Outline quality / prompt wording -> `prompts.py` (+ `outline.py`)
@@ -71,6 +71,7 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/retrieval/prompts
 - **Custom template**: inherits widescreen-scaled backgrounds, sample-slide fonts, theme/sampled colors; strips master/layout/slide decorations; WCAG white-text guard.
 - **Token limits** (`_post_chat_completion`, used by both OpenAI-compatible calls): providers like Groq free tier count input + requested output cap against tokens-per-minute (gpt-oss-120b: 8000; our cap is 8192, fixed prompt + schema is ~3.1k tokens). On 413/429 with `Limit X, [Used Y,] Requested Z`: request too big only because of the cap -> retry with cap = room if >= 1500; minute budget used up -> wait once (<= 30 s); else `TokenBudgetError` (readable Markdown, shown as a ⚠️ chat message, never retried by `_request_outline`).
 - **LLM quirks**: reasoning models (`gpt-oss`, Groq `qwen3`, `deepseek-reasoner`) use 8192 tokens, `reasoning_effort` low/none, `<think>` stripping, `message.reasoning` fallback, retry without optional params.
+- **UI conventions** (Streamlit skill best practices): `width="stretch"` (never `use_container_width`); 2-5 options -> `st.segmented_control(required=True, format_func=...)` keeping the old stored values (template mode/colors constants and `IMAGE_MODE_LABELS` in `ui/common.py`); Material icons via `icon=":material/...:"` (not emoji; keeps composer width math on plain labels); sentence-case labels; `ASSISTANT_AVATAR`, `EDIT_MARK` (generation) are the shared markers.
 - **UI**: theme-neutral CSS; `.streamlit/config.toml` defines `[theme.light]`/`[theme.dark]` (accent #C96442; never put colors in the bare `[theme]` table, it locks one mode); 50 MB upload limit there.
 
 ## 4. Known constraints / gotchas
@@ -106,3 +107,4 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/retrieval/prompts
 | 2026-10-17 | Feature: targeted slide patching (`ACTION: PATCH`, `patch_slides`, `SlidePatch`, `_sanitize_slide` extracted, schema-param JSON helpers) + lightweight BM25 chunk retrieval (`retrieval.py`) for router and patch context; smoke test adds `check_retrieval`, `check_patch`, patch-protocol asserts |
 | 2026-10-17 | Feature: `timeline_flow` + `comparison_table` layouts (schemas, prompts, sanitizer, renderers, build, editor, router digest) and image mode 3 `Report Images First` (filtered extraction, `assign_report_images`, editor picker); README layouts updated; smoke test: 11 layouts, native table check, `check_new_layouts`, `check_report_images` |
 | 2026-10-17 | Fix: Groq HTTP 413 'Request too large' (TPM) -> token-limit handling in `llm_client` (cap shrink, short wait, `TokenBudgetError` message); JSON recovery paths now validate against the requested schema (SlidePatch); smoke test `check_token_limits` |
+| 2026-10-17 | UI: `use_container_width` -> `width="stretch"` (streamlit>=1.57); radios / 2-5 option selects -> `st.segmented_control`; emoji -> Material icons; sentence-case labels (verified with `AppTest`: no exceptions or deprecation warnings) |

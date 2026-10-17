@@ -5,6 +5,8 @@ Edit when: changing the welcome screen or how chat messages look.
 
 import streamlit as st
 
+from chatppt.ui.common import ASSISTANT_AVATAR
+
 
 def render_hero() -> None:
     st.markdown(
@@ -26,9 +28,9 @@ def render_hero() -> None:
 def render_messages(chat: dict) -> None:
     for m in chat["messages"]:
         is_user = m["role"] == "user"
-        with st.chat_message(m["role"], avatar=None if is_user else "📊"):
+        with st.chat_message(m["role"], avatar=None if is_user else ASSISTANT_AVATAR):
             if m.get("attachment"):
-                st.markdown(f"📎 `{m['attachment']}`")
+                st.markdown(f":material/attach_file: `{m['attachment']}`")
             if m.get("content"):
                 st.markdown(m["content"])
             if m.get("meta"):

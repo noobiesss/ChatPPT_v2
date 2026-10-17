@@ -18,7 +18,7 @@ from chatppt.ui.state import init_state
 def main():
     st.set_page_config(
         page_title="ChatPPT V2",
-        page_icon="📊",
+        page_icon=":material/slideshow:",
         layout="wide",
         initial_sidebar_state="expanded",
     )

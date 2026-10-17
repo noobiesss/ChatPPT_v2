@@ -9,6 +9,7 @@ from chatppt.pptx_build import build_presentation_pptx
 from chatppt.pptx_template import inspect_template_summary
 from chatppt.presets import BUILTIN_THEMES
 from chatppt.schemas import IMAGE_MODE_UNSPLASH_FIRST
+from chatppt.ui.common import ASSISTANT_AVATAR, TPL_COLORS_FROM_TEMPLATE, TPL_MODE_CUSTOM
 from chatppt.ui.outline_editor import render_outline_editor
 
 
@@ -17,28 +18,32 @@ def render_export_block(chat: dict) -> None:
     s = ss.settings
     cid = chat["id"]
 
-    use_custom_tpl = ss.get("opt_tpl_mode") == "Custom .pptx template"
+    use_custom_tpl = ss.get("opt_tpl_mode") == TPL_MODE_CUSTOM
     tpl_bytes = ss.get("custom_tpl_bytes")
     tpl_name = ss.get("custom_tpl_name")
-    use_tpl_colors = ss.get("opt_tpl_color_mode", "Auto-extract colors from .pptx") == "Auto-extract colors from .pptx"
+    use_tpl_colors = ss.get("opt_tpl_color_mode", TPL_COLORS_FROM_TEMPLATE) == TPL_COLORS_FROM_TEMPLATE
 
     st.markdown("**Export**")
     if use_custom_tpl and tpl_bytes:
         info = inspect_template_summary(tpl_bytes)
         st.caption(
-            f"🎨 Using custom template **`{tpl_name}`** (font: `{info['font']}`, accent: `{info['accent']}`, "
+            f":material/palette: Using custom template **`{tpl_name}`** (font: `{info['font']}`, accent: `{info['accent']}`, "
             f"color mode: {'template colors' if use_tpl_colors else ss.get('opt_theme', 'Corporate Blue')}). "
             "Send a short message below to revise the outline."
         )
     else:
         st.caption(
-            f"🎨 Styling: **{ss.get('opt_theme', list(BUILTIN_THEMES.keys())[0])}** (change in the 🎨 button below). "
+            f":material/palette: Styling: **{ss.get('opt_theme', list(BUILTIN_THEMES.keys())[0])}** "
+            "(change it with the palette button below). "
             "Send a short message below (e.g. “make it 6 slides with more charts”) to regenerate from the same source."
         )
 
-    if st.button("🚀 Render presentation (.pptx)", type="primary", width="stretch", key=f"render_{cid}"):
+    if st.button(
+        "Render presentation (.pptx)", type="primary", icon=":material/rocket_launch:", width="stretch",
+        key=f"render_{cid}",
+    ):
         if use_custom_tpl and not tpl_bytes:
-            st.error("Upload a .pptx template in the 🎨 menu, or switch to a built-in theme.")
+            st.error("Upload a .pptx template with the palette button below, or switch to a built-in theme.")
         else:
             with st.spinner("Rendering layouts, native charts and visuals into PowerPoint..."):
                 try:
@@ -59,17 +64,18 @@ def render_export_block(chat: dict) -> None:
 
     if chat["pptx_bytes"]:
         st.download_button(
-            "📥 Download ChatPPT_V2_Presentation.pptx",
+            "Download ChatPPT_V2_Presentation.pptx",
             data=chat["pptx_bytes"],
             file_name="ChatPPT_V2_Presentation.pptx",
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            icon=":material/download:",
             width="stretch",
             key=f"dl_{cid}_{chat['gen']}",
         )
 
 
 def render_deck_block(chat: dict) -> None:
-    with st.chat_message("assistant", avatar="📊"):
+    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
         st.markdown("**Slide outline** — expand any slide to edit it, then render the deck.")
         render_outline_editor(chat)
         st.divider()

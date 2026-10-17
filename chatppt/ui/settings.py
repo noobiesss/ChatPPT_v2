@@ -12,6 +12,7 @@ from chatppt.images import _clean_unsplash_key
 from chatppt.llm_client import fetch_live_models, resolve_model_options
 from chatppt.presets import CUSTOM_PROVIDER, LLM_PROVIDERS
 from chatppt.schemas import IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST
+from chatppt.ui.common import IMAGE_MODE_HELP, IMAGE_MODE_LABELS
 
 
 def _refresh_model_list() -> None:
@@ -28,9 +29,9 @@ def open_settings() -> None:
     settings_dialog()
 
 
-@st.dialog("⚙️ Settings", width="large")
+@st.dialog("Settings", icon=":material/settings:", width="large")
 def settings_dialog() -> None:
-    """One page, one Save: provider -> API key -> model, then two-option image settings."""
+    """One page, one Save: provider -> API key -> model, then image settings."""
     ss = st.session_state
     s = ss.settings
     draft = ss.setdefault("_settings_draft", {"keys": {}, "models": {}, "custom_url": None})
@@ -47,7 +48,7 @@ def settings_dialog() -> None:
 
     def _provider_label(name: str) -> str:
         has_key = bool(draft["keys"].get(name) or s["api_keys"].get(name))
-        return f"{name}  ✅" if has_key else name
+        return f"{name} · key saved" if has_key else name
 
     provider = st.selectbox(
         "Provider",
@@ -102,28 +103,28 @@ def settings_dialog() -> None:
 
     cap_col, refresh_col = st.columns([5, 2], vertical_alignment="center")
     cap_col.caption(status)
-    refresh_col.button("🔄 Refresh list", key="set_refresh", on_click=_refresh_model_list, width="stretch")
+    refresh_col.button("Refresh list", icon=":material/refresh:", key="set_refresh", on_click=_refresh_model_list, width="stretch")
 
-    # --- 2. Images (three choices, defaulting to Option 1) ---
+    # --- 2. Images (three modes, defaulting to Unsplash / AI) ---
     st.divider()
     st.markdown("##### 2 · Images")
     cur_img_mode = s.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST)
     if cur_img_mode not in IMAGE_MODE_OPTIONS:
         cur_img_mode = IMAGE_MODE_UNSPLASH_FIRST
-    image_mode = st.radio(
+    image_mode = st.segmented_control(
         "Slide image mode",
         IMAGE_MODE_OPTIONS,
-        index=IMAGE_MODE_OPTIONS.index(cur_img_mode),
-        help="Defaults to Option 1: search Unsplash first, and fall back to AI generation if no photo is found. "
-        "Option 3 places figures extracted from the uploaded PDF/DOCX on image slides (pick one per slide in the "
-        "outline editor); slides without a figure fall back to Option 1.",
+        default=cur_img_mode,
+        required=True,
+        format_func=IMAGE_MODE_LABELS.get,
+        help=IMAGE_MODE_HELP + " You can also pick a mode (and a report figure) per slide in the outline editor.",
         key="set_image_mode",
-    )
+    ) or cur_img_mode
     unsplash_key = st.text_input(
-        "Unsplash Access Key",
+        "Unsplash access key",
         value=s["unsplash_key"],
         type="password",
-        help="Used when 'Unsplash Photo First (Fallback to AI)' is active. If blank or no photo matches, falls back to AI.",
+        help="Used by the Unsplash / AI and Report figures modes. If blank or no photo matches, an AI image is generated.",
         key="set_unsplash",
     ).strip()
     use_imagen = st.checkbox(

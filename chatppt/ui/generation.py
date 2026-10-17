@@ -11,8 +11,11 @@ from chatppt.llm_client import TokenBudgetError
 from chatppt.outline import generate_smart_outline, mentions_slide_count, parse_slide_count_change, patch_slides
 from chatppt.presets import CUSTOM_PROVIDER, REVISION_MAX_CHARS
 from chatppt.schemas import IMAGE_MODE_UNSPLASH_FIRST
-from chatppt.ui.common import _short
+from chatppt.ui.common import ASSISTANT_AVATAR, _short
 from chatppt.ui.settings import open_settings
+
+# Prefix on user messages that changed the deck
+EDIT_MARK = ":material/edit:"
 
 
 def _has_question_mark(text: str) -> bool:
@@ -23,10 +26,10 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
     """Validate the message, prepare the source text, and queue a job (which may turn out to be a plain answer)."""
     text = (text or "").strip()
     if not text and report is None:
-        st.toast("Attach a report or paste some text first.", icon="⚠️")
+        st.toast("Attach a report or paste some text first.", icon=":material/warning:")
         return
     if not model_cfg["api_key"]:
-        st.toast(f"Add your {model_cfg['provider']} API key first.", icon="🔑")
+        st.toast(f"Add your {model_cfg['provider']} API key first.", icon=":material/key:")
         open_settings()
         return
 
@@ -73,7 +76,7 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
             chat["report_images"] = extract_images_from_report(report) if report is not None else []
         source = "\n\n".join(filter(None, [file_text.strip(), text]))
         if not source:
-            st.toast("Couldn't read any text from that file.", icon="⚠️")
+            st.toast("Couldn't read any text from that file.", icon=":material/warning:")
             return
         chat["source_text"] = source
         source_for_llm = source
@@ -88,7 +91,7 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
     meta_full = f"{slide_label} · {language} · {meta_model}"
     shown = text if len(text) <= 500 else text[:500] + f"… ({len(text):,} characters)"
     if is_revision and not route:
-        shown = f"✏️ {shown}"
+        shown = f"{EDIT_MARK} {shown}"
     chat["messages"].append(
         {
             "role": "user",
@@ -131,8 +134,8 @@ def _prepare_generation(chat: dict, p: dict) -> None:
     if p.get("route") and chat["messages"] and chat["messages"][-1]["role"] == "user":
         last = chat["messages"][-1]
         last["meta"] = p["meta_revise"]
-        if p.get("is_revision") and not last["content"].startswith("✏️"):
-            last["content"] = f"✏️ {last['content']}"
+        if p.get("is_revision") and not last["content"].startswith(EDIT_MARK):
+            last["content"] = f"{EDIT_MARK} {last['content']}"
 
 
 def _run_patch(chat: dict, p: dict, targets: list) -> bool:
@@ -163,13 +166,13 @@ def _run_patch(chat: dict, p: dict, targets: list) -> bool:
     if chat["messages"] and chat["messages"][-1]["role"] == "user":
         last = chat["messages"][-1]
         last["meta"] = f"{label} · {p.get('meta_model', '')}"
-        if not last["content"].startswith("✏️"):
-            last["content"] = f"✏️ {last['content']}"
+        if not last["content"].startswith(EDIT_MARK):
+            last["content"] = f"{EDIT_MARK} {last['content']}"
     chat["messages"].append(
         {
             "role": "assistant",
             "content": f"Updated **{label}**; all other slides are unchanged. Review it below, then render the .pptx.",
-            "meta": "✏️ Targeted edit",
+            "meta": f"{EDIT_MARK} Targeted edit",
         }
     )
     return True
@@ -180,7 +183,7 @@ def run_pending(chat: dict, container) -> None:
     p = chat["pending"]
     default_img_mode = st.session_state.settings.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST)
     with container:
-        with st.chat_message("assistant", avatar="📊"):
+        with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
             if p.get("route"):
                 with st.spinner("Thinking…"):
                     decision = route_message(
@@ -198,7 +201,7 @@ def run_pending(chat: dict, container) -> None:
                         {
                             "role": "assistant",
                             "content": decision.reply,
-                            "meta": "💬 Answer · outline unchanged" if chat["slides"] else "💬 Answer",
+                            "meta": ":material/chat: Answer · outline unchanged" if chat["slides"] else ":material/chat: Answer",
                         }
                     )
                     chat["pending"] = None
@@ -230,7 +233,7 @@ def run_pending(chat: dict, container) -> None:
                         chat["title"] = slides[0]["action_title"][:40]
                     note = ""
                     if count_warning:
-                        note += f"\n\n⚠️ {count_warning}"
+                        note += f"\n\n:material/warning: {count_warning}"
                     chat["messages"].append(
                         {
                             "role": "assistant",
@@ -240,12 +243,12 @@ def run_pending(chat: dict, container) -> None:
                     )
                 except TokenBudgetError as e:
                     # Readable explanation (plan limit vs. request size) instead of the raw HTTP body
-                    chat["messages"].append({"role": "assistant", "content": f"⚠️ {e}"})
+                    chat["messages"].append({"role": "assistant", "content": f":material/warning: {e}"})
                 except Exception as e:  # noqa: BLE001
                     err = str(e)
                     err = err if len(err) <= 1200 else err[:1200] + "…"
                     chat["messages"].append(
-                        {"role": "assistant", "content": f"❌ I couldn't generate the outline.\n\n```\n{err}\n```"}
+                        {"role": "assistant", "content": f":material/error: I couldn't generate the outline.\n\n```\n{err}\n```"}
                     )
                 chat["pending"] = None
     st.rerun()

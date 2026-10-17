@@ -8,6 +8,7 @@ import streamlit as st
 from chatppt.images import assign_report_images
 from chatppt.outline import normalize_table, normalize_timeline_steps
 from chatppt.schemas import ChartType, IMAGE_MODE_OPTIONS, IMAGE_MODE_REPORT_FIRST, IMAGE_MODE_UNSPLASH_FIRST, LayoutType, VisualStyle
+from chatppt.ui.common import IMAGE_MODE_HELP, IMAGE_MODE_LABELS
 from chatppt.ui.editor_text import (
     format_kpis_for_editor,
     format_points_for_editor,
@@ -63,14 +64,14 @@ def render_outline_editor(chat: dict) -> None:
             top_c1, top_c2 = st.columns([1, 3])
             with top_c1:
                 new_layout = st.selectbox(
-                    "Slide Layout Type",
+                    "Slide layout type",
                     options=layout_options,
                     index=layout_options.index(current_layout) if current_layout in layout_options else 2,
                     key=f"{kp}layout_{idx}",
                 )
             with top_c2:
                 new_title = st.text_input(
-                    "Action Title (Conclusion-First)",
+                    "Action title (conclusion first)",
                     value=slide.get("action_title", ""),
                     key=f"{kp}title_{idx}",
                 )
@@ -83,7 +84,7 @@ def render_outline_editor(chat: dict) -> None:
                 sub_label = (
                     "Optional small line under the title (e.g. Presented by ...)"
                     if new_layout == LayoutType.CLOSING.value
-                    else "Subtitle / Section Overview"
+                    else "Subtitle / section overview"
                 )
                 slide["subtitle_or_context"] = st.text_area(
                     sub_label,
@@ -93,9 +94,9 @@ def render_outline_editor(chat: dict) -> None:
                 )
 
             elif new_layout in (LayoutType.BULLET_CARDS.value, LayoutType.THREE_CARDS.value):
-                hint = "Enter 3 items (Heading :: Detail)" if new_layout == "three_cards" else "Enter 3-4 items (Heading :: Detail)"
+                hint = "3 items" if new_layout == "three_cards" else "3-4 items"
                 raw_pts = st.text_area(
-                    f"Structured Points — One per line formatted as `{hint}`",
+                    f"Structured points ({hint}), one per line as `Heading :: Detail`",
                     value=format_points_for_editor(slide.get("points", [])),
                     height=120,
                     key=f"{kp}pts_{idx}",
@@ -108,17 +109,17 @@ def render_outline_editor(chat: dict) -> None:
                 right_col = slide.get("right_column") or {"column_title": "Right Column", "items": []}
 
                 with lc1:
-                    l_title = st.text_input("Left Column Header", value=left_col.get("column_title", ""), key=f"{kp}l_title_{idx}")
+                    l_title = st.text_input("Left column header", value=left_col.get("column_title", ""), key=f"{kp}l_title_{idx}")
                     l_pts = st.text_area(
-                        "Left Column Points (`Heading :: Detail`)",
+                        "Left column points (`Heading :: Detail`)",
                         value=format_points_for_editor(left_col.get("items", [])),
                         height=110,
                         key=f"{kp}l_pts_{idx}",
                     )
                 with lc2:
-                    r_title = st.text_input("Right Column Header", value=right_col.get("column_title", ""), key=f"{kp}r_title_{idx}")
+                    r_title = st.text_input("Right column header", value=right_col.get("column_title", ""), key=f"{kp}r_title_{idx}")
                     r_pts = st.text_area(
-                        "Right Column Points (`Heading :: Detail`)",
+                        "Right column points (`Heading :: Detail`)",
                         value=format_points_for_editor(right_col.get("items", [])),
                         height=110,
                         key=f"{kp}r_pts_{idx}",
@@ -128,7 +129,7 @@ def render_outline_editor(chat: dict) -> None:
 
             elif new_layout == LayoutType.TIMELINE_FLOW.value:
                 raw_steps = st.text_area(
-                    "Timeline Steps — 2 to 5 lines formatted as `Stage | Title | Description` "
+                    "Timeline steps: 2 to 5 lines formatted as `Stage | Title | Description` "
                     "(e.g. `Q1 2026 | Pilot Rollout | Launch in two plants and measure downtime`)",
                     value=format_steps_for_editor(slide.get("timeline_steps", [])),
                     height=140,
@@ -138,7 +139,7 @@ def render_outline_editor(chat: dict) -> None:
 
             elif new_layout == LayoutType.COMPARISON_TABLE.value:
                 raw_table = st.text_area(
-                    "Comparison Table — first line = column headers, then one row per line; separate cells with `|` "
+                    "Comparison table: first line = column headers, then one row per line; separate cells with `|` "
                     "(2-5 columns, up to 6 rows)",
                     value=format_table_for_editor(slide.get("table_headers", []), slide.get("table_rows", [])),
                     height=160,
@@ -146,12 +147,12 @@ def render_outline_editor(chat: dict) -> None:
                 )
                 headers, rows = normalize_table(*parse_table_from_editor(raw_table))
                 if not rows:
-                    st.caption("⚠️ Needs a header line with 2+ columns and at least one row; renders as cards until then.")
+                    st.caption(":material/warning: Needs a header line with 2+ columns and at least one row; renders as cards until then.")
                 slide["table_headers"], slide["table_rows"] = headers, rows
 
             elif new_layout == LayoutType.KPI_METRICS.value:
                 raw_kpis = st.text_area(
-                    "Hero KPI Metrics — One per line formatted as `Value | Label | Context` (e.g. `+62% | Latency Drop | Across Q3 peak loads`)",
+                    "Hero KPI metrics, one per line as `Value | Label | Context` (e.g. `+62% | Latency drop | Across Q3 peak loads`)",
                     value=format_kpis_for_editor(slide.get("kpis", [])),
                     height=110,
                     key=f"{kp}kpis_{idx}",
@@ -164,14 +165,17 @@ def render_outline_editor(chat: dict) -> None:
                 with cc1:
                     c_types = [ct.value for ct in ChartType]
                     cur_ct = chart_obj.get("chart_type", "bar")
-                    new_ct = st.selectbox(
-                        "Chart Type",
+                    new_ct = st.segmented_control(
+                        "Chart type",
                         options=c_types,
-                        index=c_types.index(cur_ct) if cur_ct in c_types else 0,
+                        default=cur_ct if cur_ct in c_types else c_types[0],
+                        required=True,
+                        format_func={"bar": ":material/bar_chart: Bar", "line": ":material/show_chart: Line",
+                                     "pie": ":material/pie_chart: Pie"}.get,
                         key=f"{kp}ctype_{idx}",
-                    )
-                    new_ctitle = st.text_input("Chart Title", value=chart_obj.get("chart_title", ""), key=f"{kp}ctitle_{idx}")
-                    new_sname = st.text_input("Series Name & Unit", value=chart_obj.get("series_name", "Value"), key=f"{kp}csname_{idx}")
+                    ) or c_types[0]
+                    new_ctitle = st.text_input("Chart title", value=chart_obj.get("chart_title", ""), key=f"{kp}ctitle_{idx}")
+                    new_sname = st.text_input("Series name & unit", value=chart_obj.get("series_name", "Value"), key=f"{kp}csname_{idx}")
                 with cc2:
                     cats_str = st.text_input(
                         "Categories (comma-separated)",
@@ -203,7 +207,7 @@ def render_outline_editor(chat: dict) -> None:
                 }
 
                 raw_c_pts = st.text_area(
-                    "Right-Side Chart Commentary (`Heading :: Detail`)",
+                    "Right-side chart commentary (`Heading :: Detail`)",
                     value=format_points_for_editor(slide.get("points", [])),
                     height=100,
                     key=f"{kp}cpts_{idx}",
@@ -219,34 +223,38 @@ def render_outline_editor(chat: dict) -> None:
                     if cur_src not in IMAGE_MODE_OPTIONS:
                         cur_src = IMAGE_MODE_UNSPLASH_FIRST
 
-                    chosen_src = st.radio(
-                        "Image Mode",
+                    chosen_src = st.segmented_control(
+                        "Image mode",
                         options=IMAGE_MODE_OPTIONS,
-                        index=IMAGE_MODE_OPTIONS.index(cur_src),
+                        default=cur_src,
+                        required=True,
+                        format_func=IMAGE_MODE_LABELS.get,
                         key=f"{kp}imgsrc_{idx}",
-                        help="Option 1 searches Unsplash first and falls back to AI if unavailable. Option 2 reserves a "
-                        "photo placeholder box. Option 3 uses a figure from the uploaded report (Unsplash / AI if none is left).",
-                    )
+                        help=IMAGE_MODE_HELP,
+                    ) or cur_src
                     slide["image_source_mode"] = chosen_src
                     if chosen_src == IMAGE_MODE_REPORT_FIRST:
                         _render_report_image_picker(chat, slide, idx, kp, default_img_mode)
 
                     place_opts = ["left", "right"]
                     cur_place = img_obj.get("placement", "left")
-                    new_place = st.selectbox(
-                        "Image Placement on Slide",
+                    new_place = st.segmented_control(
+                        "Image placement on slide",
                         options=place_opts,
-                        index=place_opts.index(cur_place) if cur_place in place_opts else 0,
+                        default=cur_place if cur_place in place_opts else "left",
+                        required=True,
+                        format_func={"left": ":material/align_horizontal_left: Left",
+                                     "right": ":material/align_horizontal_right: Right"}.get,
                         key=f"{kp}imgplace_{idx}",
-                    )
+                    ) or "left"
 
                     new_kw = st.text_input(
-                        "Unsplash Search Keywords (English)",
+                        "Unsplash search keywords (English)",
                         value=img_obj.get("search_keywords", ""),
                         key=f"{kp}ukw_{idx}",
                     )
                     new_vprompt = st.text_area(
-                        "AI Fallback Prompt (English)",
+                        "AI fallback prompt (English)",
                         value=img_obj.get("visual_prompt", ""),
                         height=75,
                         key=f"{kp}vprompt_{idx}",
@@ -254,12 +262,12 @@ def render_outline_editor(chat: dict) -> None:
 
                 with ic2:
                     new_caption = st.text_input(
-                        "Image Caption",
+                        "Image caption",
                         value=img_obj.get("caption", ""),
                         key=f"{kp}imgcap_{idx}",
                     )
                     raw_i_pts = st.text_area(
-                        "Accompanying Key Points (`Heading :: Detail`)",
+                        "Accompanying key points (`Heading :: Detail`)",
                         value=format_points_for_editor(slide.get("points", [])),
                         height=175,
                         key=f"{kp}ipts_{idx}",
@@ -277,7 +285,7 @@ def render_outline_editor(chat: dict) -> None:
             # Bottom Takeaway Editor for all content layouts
             if new_layout not in (LayoutType.COVER.value, LayoutType.SECTION_DIVIDER.value, LayoutType.CLOSING.value):
                 slide["bottom_takeaway"] = st.text_input(
-                    "💡 Bottom Takeaway Banner ('So What?')",
+                    "Bottom takeaway banner (the 'so what?')",
                     value=slide.get("bottom_takeaway") or "",
                     key=f"{kp}takeaway_{idx}",
                 )
