@@ -57,8 +57,10 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
             source_for_llm += (
                 f"\n\nThe current deck has {prev_count} slides:\n{deck_titles}\n"
                 f"The revised deck MUST have exactly {relative_target} slides. Keep ALL existing slides in their "
-                "current order and apply ONLY the requested change (a new conclusion/summary slide goes last; "
-                "other new slides go where they fit best). Do not replace or merge existing slides."
+                "current order and apply ONLY the requested change. A requested thank-you / closing / Q&A slide must use "
+                "the `closing` layout and be the LAST slide; a new conclusion/summary slide goes right before it "
+                "(or last if there is no closing slide); other new slides go where they fit best. "
+                "Do not replace or merge existing slides."
             )
     elif short_text_only:
         # No deck yet: if the model decides this is not a question, the short text itself becomes the source

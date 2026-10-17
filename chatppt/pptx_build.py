@@ -10,7 +10,7 @@ from pptx import Presentation
 from pptx.util import Inches
 
 from chatppt.images import resolve_slide_image_bytes
-from chatppt.pptx_render import apply_slide_fonts, clear_existing_slides, draw_header_and_takeaway, render_bullet_cards_slide, render_chart_slide, render_cover_slide, render_image_split_slide, render_kpi_metrics_slide, render_section_divider_slide, render_three_cards_slide, render_two_column_slide
+from chatppt.pptx_render import apply_slide_fonts, clear_existing_slides, draw_header_and_takeaway, render_bullet_cards_slide, render_chart_slide, render_closing_slide, render_cover_slide, render_image_split_slide, render_kpi_metrics_slide, render_section_divider_slide, render_three_cards_slide, render_two_column_slide
 from chatppt.pptx_template import _capture_template_prototypes, _create_slide_with_template, _scale_template_to_widescreen, _strip_template_decorations, extract_template_style
 from chatppt.presets import BUILTIN_THEMES
 from chatppt.schemas import IMAGE_MODE_UNSPLASH_FIRST, LayoutType
@@ -28,7 +28,7 @@ def build_presentation_pptx(
     default_image_mode: str = IMAGE_MODE_UNSPLASH_FIRST,
 ) -> bytes:
     """
-    Assemble the complete .pptx presentation across all 8 visual layouts.
+    Assemble the complete .pptx presentation across all 9 visual layouts.
     Supports both Built-in Color Themes and Custom Uploaded .pptx Templates (inheriting
     Slide Masters, role-specific layouts, slide backgrounds, theme colors, and fonts).
     Sample-slide decorations (illustrations, frames, widgets, logos) are intentionally NOT inherited.
@@ -59,8 +59,8 @@ def build_presentation_pptx(
 
     for idx, slide_data in enumerate(slides_data):
         layout = slide_data.get("layout_type", LayoutType.BULLET_CARDS.value)
-        if layout == LayoutType.COVER.value:
-            role = "cover"
+        if layout in (LayoutType.COVER.value, LayoutType.CLOSING.value):
+            role = "cover"  # the closing slide reuses the template's cover background
         elif layout == LayoutType.SECTION_DIVIDER.value:
             role = "section"
         else:
@@ -73,6 +73,9 @@ def build_presentation_pptx(
 
         elif layout == LayoutType.SECTION_DIVIDER.value:
             render_section_divider_slide(slide, slide_data, theme, apply_bg=apply_solid_bg)
+
+        elif layout == LayoutType.CLOSING.value:
+            render_closing_slide(slide, slide_data, theme, apply_bg=apply_solid_bg)
 
         else:
             draw_header_and_takeaway(slide, slide_data, idx, total_slides, theme, apply_bg=apply_solid_bg)

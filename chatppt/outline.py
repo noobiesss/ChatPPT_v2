@@ -29,7 +29,14 @@ def sanitize_outline_dict(
 
     sanitized_slides = []
 
-    for idx, slide in enumerate(outline.slides):
+    # A closing (thank-you) slide is only valid as the single, last slide
+    slides = list(outline.slides)
+    closing_slides = [s for s in slides if s.layout_type == LayoutType.CLOSING]
+    other_slides = [s for s in slides if s.layout_type != LayoutType.CLOSING]
+    if closing_slides and other_slides:
+        slides = other_slides + [closing_slides[-1]]
+
+    for idx, slide in enumerate(slides):
         s_dict = slide.model_dump()
         s_dict["slide_number"] = idx + 1
         layout = s_dict["layout_type"]
@@ -109,6 +116,8 @@ def sanitize_outline_dict(
                     "minimal vector style, no text"
                 )
 
+        if layout == LayoutType.CLOSING.value:
+            s_dict["bottom_takeaway"] = None  # a closing slide never carries a takeaway banner
         s_dict["layout_type"] = layout
         # Default to Option 1 (Unsplash Photo First, Fallback to AI) unless the user selected Option 2
         s_dict["image_source_mode"] = default_image_mode
@@ -126,7 +135,7 @@ def sanitize_outline_dict(
         if not candidate_indices:
             candidate_indices = [
                 i for i in range(1, len(sanitized_slides))
-                if sanitized_slides[i]["layout_type"] != LayoutType.SECTION_DIVIDER.value
+                if sanitized_slides[i]["layout_type"] not in (LayoutType.SECTION_DIVIDER.value, LayoutType.CLOSING.value)
             ]
         if candidate_indices:
             mid_idx = candidate_indices[len(candidate_indices) // 2]
@@ -153,16 +162,18 @@ def mentions_slide_count(text: str) -> bool:
 
 # Relative slide-count edits in revision notes, e.g. "add one more slide", "remove the last slide", "\u52a0\u4e00\u9875"
 _EN_QTY = r"\d+|an?|one|two|three|four|five|six"
-_EN_SKIP = r"(?!(?:to|on|in|of|for|at|the|this|that|each|every)\b)"
+_EN_SKIP = r"(?!(?:to|on|in|of|for|at|the|this|that|each|every|from|with|about)\b)"
 _EN_ADD_RE = re.compile(
     rf"\b(?:add|insert|append|include|create)\s+(?P<n1>{_EN_QTY})\s+(?:(?:more|extra|additional|new|another)\s+)?"
     rf"(?:{_EN_SKIP}[\w-]+\s+){{0,3}}?(?:slides?|pages?)\b(?!\s*\d)"
     rf"|\b(?P<n2>\d+|one|two|three|four|five|six)\s+(?:more|extra|additional|new)\s+(?:slides?|pages?)\b"
-    rf"|\banother\s+(?:{_EN_SKIP}[\w-]+\s+){{0,2}}?(?:slide|page)\b(?!\s*\d)",
+    rf"|\banother\s+(?:{_EN_SKIP}[\w-]+\s+){{0,2}}?(?:slide|page)\b(?!\s*\d)"
+    r"|\b(?:add|insert|append|include|create)\s+(?:the\s+)?(?:thank[\s-]?you|thanks|closing|ending|q\s*&\s*a)\s+(?:slides?|pages?)\b",
     re.IGNORECASE,
 )
 _EN_REMOVE_RE = re.compile(
-    rf"\b(?:remove|delete|drop|cut)\s+(?:(?P<n>{_EN_QTY})\s+)?(?:(?:the|this|that|last|first|final|extra)\s+)*(?:slides?|pages?)\b",
+    rf"\b(?:remove|delete|drop|cut)\s+(?:(?P<n>{_EN_QTY})\s+)?(?:(?:the|this|that|last|first|final|extra)\s+)*"
+    rf"(?:{_EN_SKIP}[\w-]+\s+){{0,2}}?(?:slides?|pages?)\b",
     re.IGNORECASE,
 )
 # Chinese: verbs add = \u52a0/\u589e\u52a0/\u6dfb\u52a0/\u65b0\u589e/\u8865\u5145 ; remove = \u5220\u9664/\u5220\u6389/\u5220/\u53bb\u6389/\u51cf\u5c11/\u51cf ; unit = \u9875/\u9801/\u5f20/\u5f35
@@ -286,8 +297,10 @@ def _trim_slides_to_count(slides: List[SlideSpec], target: int) -> List[SlideSpe
             break
         if trimmed[idx].layout_type == LayoutType.SECTION_DIVIDER:
             del trimmed[idx]
-    while len(trimmed) > target and len(trimmed) > 2:
-        del trimmed[-2]
+    # Keep the closing slide AND the conclusion before it when the deck ends with a thank-you slide
+    protected_tail = 2 if trimmed and trimmed[-1].layout_type == LayoutType.CLOSING else 1
+    while len(trimmed) > target and len(trimmed) > protected_tail + 1:
+        del trimmed[-(protected_tail + 1)]
     return trimmed
 
 

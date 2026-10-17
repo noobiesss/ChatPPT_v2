@@ -18,6 +18,7 @@ def render_composer(chat: dict) -> None:
     synced = ss.pop("opt_slides_sync", None)
     if synced is not None:
         ss["opt_slides"] = int(synced)
+    ss.setdefault("opt_slides", 8)  # single source of the default, so the slider itself carries none
     cid, ver = chat["id"], chat["composer_ver"]
     text_key, file_key = f"composer_text_{cid}_{ver}", f"composer_file_{cid}_{ver}"
     busy = chat["pending"] is not None
@@ -104,7 +105,7 @@ def render_composer(chat: dict) -> None:
                 open_settings()
 
             with c_deck.popover(deck_label, use_container_width=True):
-                num_slides = st.slider("Number of slides", 4, 20, 8, key="opt_slides")
+                num_slides = st.slider("Number of slides", 4, 20, key="opt_slides")
                 language = st.selectbox("Output language", LANGUAGE_OPTIONS, key="opt_language")
                 tone_label = st.selectbox("Tone", list(TONE_OPTIONS.keys()), key="opt_tone")
 

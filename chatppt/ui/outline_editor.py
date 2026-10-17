@@ -43,9 +43,14 @@ def render_outline_editor(chat: dict) -> None:
             slide["action_title"] = new_title
 
             # Dynamic Editor Fields Based on Selected Layout
-            if new_layout in (LayoutType.COVER.value, LayoutType.SECTION_DIVIDER.value):
+            if new_layout in (LayoutType.COVER.value, LayoutType.SECTION_DIVIDER.value, LayoutType.CLOSING.value):
+                sub_label = (
+                    "Optional small line under the title (e.g. Presented by ...)"
+                    if new_layout == LayoutType.CLOSING.value
+                    else "Subtitle / Section Overview"
+                )
                 slide["subtitle_or_context"] = st.text_area(
-                    "Subtitle / Section Overview",
+                    sub_label,
                     value=slide.get("subtitle_or_context") or "",
                     height=80,
                     key=f"{kp}sub_{idx}",
@@ -208,7 +213,7 @@ def render_outline_editor(chat: dict) -> None:
                 }
 
             # Bottom Takeaway Editor for all content layouts
-            if new_layout not in (LayoutType.COVER.value, LayoutType.SECTION_DIVIDER.value):
+            if new_layout not in (LayoutType.COVER.value, LayoutType.SECTION_DIVIDER.value, LayoutType.CLOSING.value):
                 slide["bottom_takeaway"] = st.text_input(
                     "💡 Bottom Takeaway Banner ('So What?')",
                     value=slide.get("bottom_takeaway") or "",

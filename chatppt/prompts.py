@@ -25,6 +25,13 @@ Transform the user's source report into a visually diverse, executive-ready slid
      Inside `image`, ALWAYS provide:
        * `search_keywords`: 2 to 3 concrete, everyday English nouns for Unsplash stock photo search (e.g., "data center", "team meeting", "warehouse logistics", "solar panels"). Avoid long or overly abstract phrases.
        * `visual_prompt`: a detailed 20 to 35 word English prompt for AI image fallback if no stock photo matches.
+   - `closing`: a minimal thank-you / closing slide. Use it ONLY when the user explicitly asks for a thank-you, closing,
+     ending, "presented by" or Q&A slide in the revision notes. NEVER add one on your own: by default the deck ends with
+     a content slide (conclusion or next steps). When requested, create exactly ONE, as the LAST slide; it counts toward
+     the total slide count. Put only the short closing phrase in `action_title`, in the output language
+     (e.g. "Thank You", "谢谢", "Q&A"). Only if the user gave a name, organization or date, put ONE short line such as
+     "Presented by <name>" in `subtitle_or_context`; otherwise leave it empty. NEVER invent contact details
+     (emails, phone numbers, websites) and NEVER add points, cards, KPIs, chart, image or `bottom_takeaway`.
    - `three_cards`: Use when presenting 3 parallel pillars, modules, features, or strategic recommendations (`points` = 3 items).
    - `two_column`: Use for comparisons (Pros vs. Cons, Before vs. After, Problem vs. Solution). Populate BOTH `left_column` and `right_column`.
    - `kpi_metrics`: Use when highlighting 2 to 4 headline numbers/statistics from the text (`kpis`).
@@ -38,7 +45,7 @@ Transform the user's source report into a visually diverse, executive-ready slid
 
 4. SCANNABLE COPYWRITING & TAKEAWAY BANNER:
    - Break every point into a short bold `heading` (3-6 words) and a concise `detail` (12-25 words).
-   - Include a `bottom_takeaway` on all content slides summarizing the strategic implication ("So What?").
+   - Include a `bottom_takeaway` on all content slides (NOT on `cover`, `section_divider` or `closing`) summarizing the strategic implication ("So What?").
 """
 
 

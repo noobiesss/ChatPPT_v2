@@ -19,6 +19,7 @@ class LayoutType(str, Enum):
     KPI_METRICS = "kpi_metrics"
     CHART_SLIDE = "chart_slide"
     IMAGE_SPLIT = "image_split"
+    CLOSING = "closing"
 
 
 class ChartType(str, Enum):
@@ -126,7 +127,8 @@ class SlideSpec(BaseModel):
     )
     subtitle_or_context: Optional[str] = Field(
         default=None,
-        description="Used for 'cover' (presentation subtitle) or 'section_divider' (section overview)."
+        description="Used for 'cover' (presentation subtitle), 'section_divider' (section overview), or 'closing' "
+                    "(optional one-line presenter note such as 'Presented by ...'; leave empty if the user gave no name)."
     )
     points: Optional[List[StructuredPoint]] = Field(
         default=None,
@@ -156,7 +158,7 @@ class SlideSpec(BaseModel):
     bottom_takeaway: Optional[str] = Field(
         default=None,
         description="Single punchy sentence (10 to 20 words) summarizing the 'So What?' in a bottom banner. "
-                    "Leave None for 'cover' and 'section_divider'."
+                    "Leave None for 'cover', 'section_divider' and 'closing'."
     )
 
 

@@ -45,6 +45,7 @@ def sample_slides() -> list:
         {"slide_number": 8, "layout_type": "image_split", "action_title": "Image split title", "points": pts[:2],
          "image": {"preferred_style": "stock_photo", "visual_prompt": "x", "search_keywords": "office", "caption": "Caption", "placement": "left"},
          "image_source_mode": "Reserve Photo Placeholder", "bottom_takeaway": "So what."},
+        {"slide_number": 9, "layout_type": "closing", "action_title": "Thank You", "subtitle_or_context": "Presented by Test"},
     ]
 
 
@@ -56,7 +57,7 @@ def check_builtin_decks() -> None:
     for theme in list(BUILTIN_THEMES)[:2]:
         data = build_presentation_pptx(slides, theme, None, False, "", [])
         assert len(Presentation(io.BytesIO(data)).slides) == len(slides), theme
-    print(f"[ok] built-in decks: {len(slides)} slides, all 8 layouts")
+    print(f"[ok] built-in decks: {len(slides)} slides, all 9 layouts")
 
 
 def _make_template() -> bytes:
@@ -119,7 +120,31 @@ def check_helpers() -> None:
     assert parse_slide_count_change("make it 6 slides", 8) is None
     assert parse_slide_count_change("add a chart to slide 3", 8) is None
     assert parse_slide_count_change("shorter titles", 8) is None
+    assert parse_slide_count_change("add a thank you slide", 8) == 9
+    assert parse_slide_count_change("add thank you slide", 8) == 9
+    assert parse_slide_count_change("remove the thank you slide", 8) == 7
+    assert parse_slide_count_change("remove duplicates from slide 3", 8) is None
     print("[ok] helpers")
+
+
+def check_closing_slide() -> None:
+    from chatppt.outline import _trim_slides_to_count, sanitize_outline_dict
+    from chatppt.schemas import LayoutType, PresentationOutline, SlideSpec
+
+    def spec(i, layout):
+        return SlideSpec(slide_number=i + 1, layout_type=layout, action_title=f"T{i}")
+
+    # A misplaced closing slide is moved to the end, kept unique and given no takeaway banner
+    layouts = ["cover", "closing", "bullet_cards", "bullet_cards", "bullet_cards"]
+    out = sanitize_outline_dict(PresentationOutline(deck_title="d", slides=[spec(i, lt) for i, lt in enumerate(layouts)]))
+    kinds = [s["layout_type"] for s in out]
+    assert kinds[-1] == "closing" and kinds.count("closing") == 1, kinds
+    assert out[-1]["bottom_takeaway"] is None
+    # Trimming never drops the closing slide or the conclusion right before it
+    deck = [spec(i, lt) for i, lt in enumerate(["cover", "bullet_cards", "bullet_cards", "bullet_cards", "closing"])]
+    trimmed = _trim_slides_to_count(deck, 4)
+    assert len(trimmed) == 4 and trimmed[-1].layout_type == LayoutType.CLOSING and trimmed[-2].action_title == "T3"
+    print("[ok] closing slide: placement, no takeaway, trim-safe")
 
 
 def check_assistant() -> None:
@@ -141,7 +166,7 @@ def check_assistant() -> None:
 
 
 if __name__ == "__main__":
-    for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_assistant):
+    for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide, check_assistant):
         fn()
     print("ALL SMOKE TESTS PASSED")
     sys.exit(0)

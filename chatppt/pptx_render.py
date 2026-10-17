@@ -1,4 +1,4 @@
-"""Slide drawing helpers and the 8 layout renderers (cover, divider, cards, columns, KPI, chart, image split).
+"""Slide drawing helpers and the 9 layout renderers (cover, divider, closing, cards, columns, KPI, chart, image split).
 
 Edit when: changing how a given slide layout looks. Does not touch template inheritance or the UI.
 """
@@ -10,7 +10,7 @@ from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from pptx.enum.shapes import MSO_SHAPE
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
 from chatppt.images import add_picture_fitted
@@ -194,6 +194,48 @@ def render_section_divider_slide(slide, slide_data: dict, theme: Dict[str, objec
         p_sub = tf_sub.paragraphs[0]
         p_sub.text = context
         p_sub.font.size = Pt(18)
+        p_sub.font.color.rgb = theme["subtitle_cover"]
+
+
+def render_closing_slide(slide, slide_data: dict, theme: Dict[str, object], apply_bg: bool = True) -> None:
+    """
+    Render Layout 9: Closing Slide. Only a large centered phrase (e.g. "Thank You"), a short accent bar and an
+    optional one-line presenter note. Deliberately no cards, points, banner or contact details.
+    """
+    if apply_bg:
+        set_solid_background(slide, theme["bg_cover"])
+
+    slide_w = 13.333
+    title = (slide_data.get("action_title") or "").strip() or "Thank You"
+    size = 60 if len(title) <= 24 else 44 if len(title) <= 48 else 36
+
+    title_box = slide.shapes.add_textbox(Inches(1.1), Inches(2.3), Inches(slide_w - 2.2), Inches(2.0))
+    tf_title = title_box.text_frame
+    tf_title.word_wrap = True
+    tf_title.vertical_anchor = MSO_ANCHOR.MIDDLE
+    p_title = tf_title.paragraphs[0]
+    p_title.text = title
+    p_title.alignment = PP_ALIGN.CENTER
+    p_title.font.size = Pt(size)
+    p_title.font.bold = True
+    p_title.font.color.rgb = theme["title_cover"]
+
+    bar = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, Inches((slide_w - 1.4) / 2), Inches(4.5), Inches(1.4), Inches(0.14)
+    )
+    bar.fill.solid()
+    bar.fill.fore_color.rgb = theme["accent"]
+    bar.line.fill.background()
+
+    note = (slide_data.get("subtitle_or_context") or "").strip()
+    if note:
+        sub_box = slide.shapes.add_textbox(Inches(1.1), Inches(4.9), Inches(slide_w - 2.2), Inches(1.0))
+        tf_sub = sub_box.text_frame
+        tf_sub.word_wrap = True
+        p_sub = tf_sub.paragraphs[0]
+        p_sub.text = note
+        p_sub.alignment = PP_ALIGN.CENTER
+        p_sub.font.size = Pt(22)
         p_sub.font.color.rgb = theme["subtitle_cover"]
 
 

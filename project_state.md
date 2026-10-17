@@ -3,8 +3,8 @@
 > **How to use:** Paste or upload this file at the start of a new chat, together with ONLY the module file(s) the task needs (see section 2a — you no longer need to upload or return the whole code base).
 > Read it fully before touching any code. **Update "Changelog", "Github Commit Log", and "Pending Tasks" at the end of every work session** and return the updated file.
 
-Last updated: 2026-10-17 (single Send button: ChatPPT decides per message whether it is a question to answer or a deck instruction to (re)generate)
-Github Commit Log: `feat(chat): one Send button; LLM routes short messages to Q&A (answer, deck untouched) or outline revision; new chat_assistant module`
+Last updated: 2026-10-17 (new minimal `closing` thank-you layout, generated ONLY when the user asks for it)
+Github Commit Log: `feat(layout): add minimal closing (thank-you) layout, opt-in only; last-slide enforcement, trim-safe, editor + renderer support`
 ---
 
 ## 0. User Preferences (MUST FOLLOW)
@@ -43,7 +43,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 | `chatppt/images.py` | Unsplash fetch, AI image fallback, `resolve_slide_image_bytes`, `add_picture_fitted` | image sources/queries/placement |
 | `chatppt/outline.py` | `generate_smart_outline`, slide-count retries/trim, `sanitize_outline_dict` | outline requesting/validation/normalizing |
 | `chatppt/pptx_template.py` | Custom `.pptx` inheritance (colors, fonts, backgrounds, decoration stripping, prototypes) | uploaded template not reproduced correctly |
-| `chatppt/pptx_render.py` | Drawing helpers + the 8 layout renderers | changing how one layout looks |
+| `chatppt/pptx_render.py` | Drawing helpers + the 9 layout renderers | changing how one layout looks |
 | `chatppt/pptx_build.py` | `build_presentation_pptx` (deck assembly, layout dispatch) | deck-level flow, adding a layout dispatch entry |
 | `chatppt/ui/state.py` | Session-state defaults, chat create/delete | new session key or default setting |
 | `chatppt/ui/css.py` | `APP_CSS`, CSS injection (theme-independent: no hard-coded page colors) | look & feel |
@@ -79,7 +79,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 ## 2. Architecture (function-level overview; the file that holds each part is in 2a)
 
 1. **Schemas & Constants:**
-   - `PresentationOutline` -> `SlideSpec` (`LayoutType`: `cover`, `section_divider`, `bullet_cards`, `three_cards`, `two_column`, `kpi_metrics`, `chart_slide`, `image_split`).
+   - `PresentationOutline` -> `SlideSpec` (`LayoutType`: `cover`, `section_divider`, `bullet_cards`, `three_cards`, `two_column`, `kpi_metrics`, `chart_slide`, `image_split`, `closing`).
    - Sub-models: `StructuredPoint`, `ColumnContent`, `KPIMetric`, `ChartSpec` (`bar`, `line`, `pie`), `ImageSpec` (`preferred_style` defaults to `stock_photo`; `placement`: `left`, `right`).
    - Two-option image mode constants: `IMAGE_MODE_UNSPLASH_FIRST = "Unsplash Photo First (Fallback to AI)"` (default), `IMAGE_MODE_PLACEHOLDER = "Reserve Photo Placeholder"`, `IMAGE_MODE_OPTIONS`.
 2. **Presets & Themes:** `LLM_PROVIDERS` (Gemini, Groq, OpenAI, DeepSeek, OpenRouter, Custom OpenAI-Compatible) and `BUILTIN_THEMES` (Corporate Blue, Modern Dark, Minimalist Light, Emerald Forest).
@@ -95,7 +95,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
    - `add_picture_fitted()` centers images without stretching and converts RGBA/WEBP to RGB.
 7. **PPTX Rendering & Custom Template Inheritance:**
    - Template helpers: `_scale_template_to_widescreen()`, `extract_template_style()` + `_parse_theme_xml_colors_and_fonts()` + `_sample_slide_colors_and_fonts()` (prefers sample-slide run fonts over `theme1.xml`), `_capture_template_prototypes()` + `_is_full_bleed_background_shape()` + `_has_visible_fill()`, `_strip_template_decorations()` (removes non-placeholder frames/ornaments from layouts/masters), `_create_slide_with_template()`, `apply_slide_fonts()`, `_ensure_white_text_contrast()`.
-   - Renderers: `build_presentation_pptx()` + 8 layout renderers.
+   - Renderers: `build_presentation_pptx()` + 9 layout renderers.
 8. **Chat-Style UI:**
    - Session state: `chats`, `chat_order`, `active_chat`, `settings` (`api_keys`, `provider`, `models`, `custom_base_url`, `image_mode`, `unsplash_key`, `use_imagen`), `custom_tpl_bytes`, `custom_tpl_name`.
    - One-page `settings_dialog()` (Provider -> API key -> Model, plus 2-option `Slide image mode`, Unsplash key, Imagen toggle, single Save).
@@ -134,6 +134,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 - [ ] User to check Light / Dark / System after the theme change; tune colors only in `.streamlit/config.toml` (never put colors in the bare `[theme]` table: it locks the app to one mode).
 - [ ] User to verify: generate 8 slides, then revise with "add one more slide conclusion" -> expect 9 slides (old 8 kept, Conclusion last) and the slider showing 9.
 - [ ] User to verify Q&A: after a deck exists ask "why did you use three cards on slide 4?" -> answer bubble, outline unchanged; then "make the titles shorter" -> outline regenerates; a first message like "what can you do?" -> answer, no deck.
+- [ ] User to verify: a default deck has NO thank-you slide; then send "add a thank you slide" -> 9 slides, last one is a big centered "Thank You" (no cards); try a custom .pptx template too.
 - [ ] Optional: deploy to GitHub + Streamlit Community Cloud / Railway for 24/7 hosting.
 - [ ] Optional: next UI or rendering enhancements requested by the user.
 
@@ -151,3 +152,4 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 | 2026-10-17 | Theme: `.streamlit/config.toml` now defines `[theme.light]` and `[theme.dark]` (+ sidebar tables) so the menu offers System / Light / Dark; shared accent #C96442, warm cream light palette (#FAF9F5 / #F0EEE6 / text #1F1E1D), warm charcoal dark palette (#262624 / #30302E / text #ECEBE4) |
 | 2026-10-17 | Fix: revision "add one more slide conclusion" replaced slide 8 because the slider (8) was still enforced and trimmed the 9th slide. Now `parse_slide_count_change()` (outline.py) computes target = current slides + delta, `handle_send` (generation.py) passes it as `num_slides`, appends the current slide titles + "keep all existing slides" to the LLM source, and queues `opt_slides_sync` which `render_composer` (composer.py) applies to the slider before it is created. Smoke test extended with 8 parser assertions |
 | 2026-10-17 | Feature: one **Send ➤** button (was Generate). Text-only messages up to `REVISION_MAX_CHARS` are routed by `chat_assistant.route_message` (1 plain-text LLM call, protocol `ACTION: ANSWER` / `ACTION: REVISE`, context = source + current outline digest + last 6 chat messages). ANSWER -> assistant bubble ("💬 Answer · outline unchanged"), deck/slider untouched; REVISE -> old outline generation. Attached files, long texts, and plain relative-count instructions ("add one more slide", no `?`) skip the routing call. Router failure falls back to REVISE. `llm_client.py` gained `call_openai_compatible_text`, `call_gemini_text`, `strip_think_tags`; `handle_send` now defers side effects (source commit, `opt_slides_sync`) to `run_pending` via `_prepare_generation`. Smoke test: `check_assistant` |
+| 2026-10-17 | Feature: `closing` layout (schemas, prompts, outline, pptx_render `render_closing_slide`, pptx_build, ui/outline_editor). Big centered phrase + accent bar + optional one-line presenter note; no cards/points/takeaway/contact details. Opt-in only: the prompt forbids adding it unprompted (decks end with a content slide). Sanitizer moves a closing slide to the end, keeps one, clears its takeaway; `_trim_slides_to_count` protects closing + the conclusion before it; closing is excluded from the image_split auto-promotion. `parse_slide_count_change` now also understands "add (a) thank you slide" and "remove the thank you slide" (fewer false positives via a wider preposition skip list); the revision prompt tells the model to use `closing` as the last slide. Smoke test: sample deck now has 9 layouts + `check_closing_slide` |
