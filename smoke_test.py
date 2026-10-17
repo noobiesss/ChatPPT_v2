@@ -122,8 +122,26 @@ def check_helpers() -> None:
     print("[ok] helpers")
 
 
+def check_assistant() -> None:
+    from chatppt.chat_assistant import build_assistant_prompt, parse_assistant_reply
+
+    assert parse_assistant_reply("ACTION: REVISE").action == "revise"
+    assert parse_assistant_reply("<think>hmm</think>ACTION: REVISE\n").action == "revise"
+    dec = parse_assistant_reply("ACTION: ANSWER\nBecause the data is a comparison.")
+    assert dec.action == "answer" and dec.reply == "Because the data is a comparison."
+    assert parse_assistant_reply("**ACTION: ANSWER**\nHi there").reply == "Hi there"
+    assert parse_assistant_reply("Just a plain answer").action == "answer"
+    assert parse_assistant_reply("").action == "revise" and parse_assistant_reply("ACTION: ANSWER").action == "revise"
+    prompt = build_assistant_prompt(
+        "why three cards?", "SOURCE_MARKER text", sample_slides(), [{"role": "user", "content": "HISTORY_MARKER"}]
+    )
+    for marker in ("SOURCE_MARKER", "Three cards title", "KPI title", "HISTORY_MARKER", "why three cards?"):
+        assert marker in prompt, marker
+    print("[ok] assistant routing + prompt context")
+
+
 if __name__ == "__main__":
-    for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers):
+    for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_assistant):
         fn()
     print("ALL SMOKE TESTS PASSED")
     sys.exit(0)

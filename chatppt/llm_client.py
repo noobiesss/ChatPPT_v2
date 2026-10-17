@@ -10,6 +10,7 @@ import urllib.request
 from typing import List, Dict, Optional
 
 from google import genai
+from google.genai import types
 import streamlit as st
 
 from chatppt.schemas import PresentationOutline
@@ -321,4 +322,109 @@ def call_openai_compatible_json(
         f"The model `{model_name}` returned an empty response (finish_reason={last_finish_reason!r}). "
         "It may have exhausted its output token limit during internal reasoning. "
         "Please try again or switch to another model (such as `llama-3.3-70b-versatile`)."
+    )
+
+
+def strip_think_tags(raw_text: Optional[str]) -> str:
+    """Remove <think>...</think> blocks (and an unclosed trailing <think>) from a plain-text LLM reply."""
+    if not raw_text or not isinstance(raw_text, str):
+        return ""
+    cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)
+    if "<think>" in cleaned:
+        cleaned = cleaned[: cleaned.find("<think>")]
+    return cleaned.strip()
+
+
+def call_gemini_text(
+    api_key: str,
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.4,
+) -> str:
+    """Plain-text (non-JSON) Gemini call used for conversational answers."""
+    client = genai.Client(api_key=(api_key or "").strip())
+    response = client.models.generate_content(
+        model=model_name,
+        contents=user_prompt,
+        config=types.GenerateContentConfig(system_instruction=system_prompt, temperature=temperature),
+    )
+    text = strip_think_tags(getattr(response, "text", None) or "")
+    if not text:
+        raise RuntimeError(f"Google Gemini (`{model_name}`) returned an empty response.")
+    return text
+
+
+def call_openai_compatible_text(
+    base_url: str,
+    api_key: str,
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int = 4096,
+    temperature: float = 0.4,
+) -> str:
+    """
+    Plain-text counterpart of call_openai_compatible_json for conversational answers.
+    Applies the same reasoning-model quirks (token parameter name, reasoning effort) and retries
+    once without the optional parameters if the endpoint rejects them.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key.strip()}",
+        "HTTP-Referer": "https://chatppt-v2.streamlit.app",
+        "X-Title": "ChatPPT V2",
+        "User-Agent": "ChatPPT-V2/2.0",
+    }
+    url_lower = base_url.lower()
+    model_lower = model_name.lower()
+    is_groq = "groq.com" in url_lower
+    is_openai = "openai.com" in url_lower
+    last_finish_reason = None
+
+    for include_extra_params in (True, False):
+        payload: Dict[str, object] = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": temperature,
+        }
+        if include_extra_params:
+            if is_groq or is_openai or model_lower.startswith(("o1", "o3", "o4", "gpt-5")):
+                payload["max_completion_tokens"] = max_tokens
+            else:
+                payload["max_tokens"] = max_tokens
+            if "gpt-oss" in model_lower:
+                payload["reasoning_effort"] = "low"
+            elif is_groq and "qwen3" in model_lower:
+                payload["reasoning_effort"] = "none"
+
+        req = urllib.request.Request(
+            base_url.strip(), data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                resp_data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as http_err:
+            err_body = http_err.read().decode("utf-8", errors="ignore")
+            lowered_err = err_body.lower()
+            if (
+                http_err.code == 400
+                and include_extra_params
+                and any(k in lowered_err for k in ("max_completion_tokens", "max_tokens", "reasoning_effort", "unrecognized", "unknown"))
+            ):
+                continue
+            raise RuntimeError(f"Provider API HTTP {http_err.code}: {err_body}") from http_err
+
+        choice0 = (resp_data.get("choices") or [{}])[0]
+        last_finish_reason = choice0.get("finish_reason")
+        text = strip_think_tags((choice0.get("message") or {}).get("content") or "")
+        if text:
+            return text
+
+    raise RuntimeError(
+        f"The model `{model_name}` returned an empty answer (finish_reason={last_finish_reason!r}). "
+        "Please try again or switch to another model."
     )

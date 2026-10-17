@@ -3,8 +3,8 @@
 > **How to use:** Paste or upload this file at the start of a new chat, together with ONLY the module file(s) the task needs (see section 2a — you no longer need to upload or return the whole code base).
 > Read it fully before touching any code. **Update "Changelog", "Github Commit Log", and "Pending Tasks" at the end of every work session** and return the updated file.
 
-Last updated: 2026-10-17 (revision fix: relative slide-count edits like "add one more slide" now raise the target to current deck size + delta and sync the Number-of-slides slider)
-Github Commit Log: `fix(outline): treat "add/remove N slide(s)" revisions as relative to the current deck, keep existing slides, sync the slide slider`
+Last updated: 2026-10-17 (single Send button: ChatPPT decides per message whether it is a question to answer or a deck instruction to (re)generate)
+Github Commit Log: `feat(chat): one Send button; LLM routes short messages to Q&A (answer, deck untouched) or outline revision; new chat_assistant module`
 ---
 
 ## 0. User Preferences (MUST FOLLOW)
@@ -39,6 +39,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 | `chatppt/extraction.py` | PDF/DOCX/TXT/MD text + embedded image extraction | changing how reports are read |
 | `chatppt/prompts.py` | `SYSTEM_INSTRUCTION` (LLM design prompt) | tuning outline quality/routing rules |
 | `chatppt/llm_client.py` | Live model discovery, JSON cleaning/repair, `call_openai_compatible_json` | provider/model quirks, token limits, JSON failures |
+| `chatppt/chat_assistant.py` | Q&A + routing: `route_message` (one LLM call -> `ACTION: ANSWER` + reply, or `ACTION: REVISE`), `build_assistant_prompt`, `build_deck_digest`, `parse_assistant_reply` | how questions are answered / what context the assistant sees |
 | `chatppt/images.py` | Unsplash fetch, AI image fallback, `resolve_slide_image_bytes`, `add_picture_fitted` | image sources/queries/placement |
 | `chatppt/outline.py` | `generate_smart_outline`, slide-count retries/trim, `sanitize_outline_dict` | outline requesting/validation/normalizing |
 | `chatppt/pptx_template.py` | Custom `.pptx` inheritance (colors, fonts, backgrounds, decoration stripping, prototypes) | uploaded template not reproduced correctly |
@@ -56,6 +57,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 
 **Task -> files to upload (plus this file):**
 - Outline quality / prompt wording -> `prompts.py` (+ `outline.py`)
+- Q&A answers / question-vs-instruction routing -> `chat_assistant.py` + `prompts.py` (`ASSISTANT_SYSTEM_INSTRUCTION`) (+ `ui/generation.py`)
 - Slide count / outline validation -> `outline.py` (+ `schemas.py`)
 - LLM provider, model list, empty/invalid JSON -> `llm_client.py` (+ `presets.py`)
 - Uploaded template looks wrong (frames, fonts, colors) -> `pptx_template.py`
@@ -67,7 +69,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 - Styling -> `ui/css.py`
 
 **Rules for any AI editing the code:**
-1. Keep layering: `schemas/presets` -> `extraction/prompts/llm_client` -> `outline/images` -> `pptx_template` -> `pptx_render` -> `pptx_build` -> `ui/*` -> `app.py`. A module may only import from modules above it. Core modules must not import `streamlit` UI code (they may use `st.cache_data`).
+1. Keep layering: `schemas/presets` -> `extraction/prompts/llm_client` -> `outline/images/chat_assistant` -> `pptx_template` -> `pptx_render` -> `pptx_build` -> `ui/*` -> `app.py`. A module may only import from modules above it. Core modules must not import `streamlit` UI code (they may use `st.cache_data`).
 2. Streamlit session keys are created in `ui/state.py::init_state`; read/write them elsewhere via `st.session_state.settings[...]`.
 3. If you add a new top-level function used by other modules, list it in the file map above.
 4. Finish with `python smoke_test.py`; add a check there when you fix a bug that could regress (e.g. template frames/fonts).
@@ -131,6 +133,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 - [x] `config.toml` lives in `.streamlit/` (50 MB upload limit + themes apply).
 - [ ] User to check Light / Dark / System after the theme change; tune colors only in `.streamlit/config.toml` (never put colors in the bare `[theme]` table: it locks the app to one mode).
 - [ ] User to verify: generate 8 slides, then revise with "add one more slide conclusion" -> expect 9 slides (old 8 kept, Conclusion last) and the slider showing 9.
+- [ ] User to verify Q&A: after a deck exists ask "why did you use three cards on slide 4?" -> answer bubble, outline unchanged; then "make the titles shorter" -> outline regenerates; a first message like "what can you do?" -> answer, no deck.
 - [ ] Optional: deploy to GitHub + Streamlit Community Cloud / Railway for 24/7 hosting.
 - [ ] Optional: next UI or rendering enhancements requested by the user.
 
@@ -147,3 +150,4 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 | 2026-10-17 | UI: composer dock no longer uses a Python-detected background color (it stayed dark after switching to Light); now a frosted blur strip + translucent composer works in both themes; textarea fully transparent (no dark outline); primary buttons use accent #C96442; footer note `ChatPPT can make mistakes. Please check responses.` under the composer; removed `_dock_background()` |
 | 2026-10-17 | Theme: `.streamlit/config.toml` now defines `[theme.light]` and `[theme.dark]` (+ sidebar tables) so the menu offers System / Light / Dark; shared accent #C96442, warm cream light palette (#FAF9F5 / #F0EEE6 / text #1F1E1D), warm charcoal dark palette (#262624 / #30302E / text #ECEBE4) |
 | 2026-10-17 | Fix: revision "add one more slide conclusion" replaced slide 8 because the slider (8) was still enforced and trimmed the 9th slide. Now `parse_slide_count_change()` (outline.py) computes target = current slides + delta, `handle_send` (generation.py) passes it as `num_slides`, appends the current slide titles + "keep all existing slides" to the LLM source, and queues `opt_slides_sync` which `render_composer` (composer.py) applies to the slider before it is created. Smoke test extended with 8 parser assertions |
+| 2026-10-17 | Feature: one **Send ➤** button (was Generate). Text-only messages up to `REVISION_MAX_CHARS` are routed by `chat_assistant.route_message` (1 plain-text LLM call, protocol `ACTION: ANSWER` / `ACTION: REVISE`, context = source + current outline digest + last 6 chat messages). ANSWER -> assistant bubble ("💬 Answer · outline unchanged"), deck/slider untouched; REVISE -> old outline generation. Attached files, long texts, and plain relative-count instructions ("add one more slide", no `?`) skip the routing call. Router failure falls back to REVISE. `llm_client.py` gained `call_openai_compatible_text`, `call_gemini_text`, `strip_think_tags`; `handle_send` now defers side effects (source commit, `opt_slides_sync`) to `run_pending` via `_prepare_generation`. Smoke test: `check_assistant` |

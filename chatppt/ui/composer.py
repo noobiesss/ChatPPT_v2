@@ -41,16 +41,16 @@ def render_composer(chat: dict) -> None:
                 key=text_key,
                 height=90,
                 placeholder=(
-                    "Paste your report or notes here… "
+                    "Paste your report or notes, or ask me anything… "
                     if not chat["slides"]
-                    else "Ask for changes, e.g. “make it 6 slides and add more charts”… "
+                    else "Ask a question, or request changes, e.g. “why this layout?” or “add one more slide”… "
                 ),
                 label_visibility="collapsed",
                 disabled=busy,
             )
             attach_label = f"📎 {_short(attached.name, 12)}" if attached else "📎 Attach"
             deck_label = f"⚙ {ss.get('opt_slides', 8)} slides"
-            send_label = "Generate ➤"
+            send_label = "Send ➤"
             # Column widths follow label length so button text is never cut off
             widths = [max(len(lbl), 8) + 5 for lbl in (attach_label, tpl_label, model_label, deck_label, send_label)]
             c_file, c_tpl, c_model, c_deck, c_send = st.columns(widths, vertical_alignment="center")
