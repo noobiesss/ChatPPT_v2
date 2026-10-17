@@ -59,6 +59,12 @@ class VisualStyle(str, Enum):
     AI_ILLUSTRATION = "ai_illustration"
 
 
+# Two-option image mode (Option 1 is the universal default when the user makes no selection)
+IMAGE_MODE_UNSPLASH_FIRST = "Unsplash Photo First (Fallback to AI)"
+IMAGE_MODE_PLACEHOLDER = "Reserve Photo Placeholder"
+IMAGE_MODE_OPTIONS = [IMAGE_MODE_UNSPLASH_FIRST, IMAGE_MODE_PLACEHOLDER]
+
+
 class StructuredPoint(BaseModel):
     heading: str = Field(
         description="Short, bold anchor phrase (3 to 6 words) summarizing the point, e.g., '3x Faster Query Speed'."
@@ -109,17 +115,17 @@ class ChartSpec(BaseModel):
 
 class ImageSpec(BaseModel):
     preferred_style: VisualStyle = Field(
-        default=VisualStyle.AI_ILLUSTRATION,
-        description="Smart Hybrid Router: Choose 'stock_photo' for real-world subjects, people, offices, hardware, or cities. "
-                    "Choose 'ai_illustration' for abstract technical architectures, software workflows, or conceptual diagrams."
+        default=VisualStyle.STOCK_PHOTO,
+        description="Default to 'stock_photo' so Unsplash photography is prioritized before falling back to AI."
     )
     visual_prompt: str = Field(
-        description="Detailed English prompt (20 to 35 words) for an AI image generator describing a clean, "
-                    "modern illustration or diagram that visually explains this slide's concept. "
+        description="Detailed English prompt (20 to 35 words) for an AI image generator fallback describing a clean, "
+                    "modern illustration or photo that visually explains this slide's concept. "
                     "Specify 'clean minimal corporate style, no text inside image'."
     )
     search_keywords: str = Field(
-        description="2 to 4 concise English keywords for Unsplash stock photo search, e.g., 'data center server room' or 'team strategy meeting'."
+        description="2 to 3 concise, concrete English keywords for Unsplash stock photo search, "
+                    "e.g., 'server room', 'team strategy meeting', or 'renewable energy'."
     )
     caption: str = Field(
         description="Short caption (8 to 15 words, in the target presentation language) displayed below the image."
@@ -392,12 +398,12 @@ Transform the user's source report into a visually diverse, executive-ready slid
 2. SMART LAYOUT ROUTING (Vary layouts so no more than 2 consecutive slides share the same type):
    - `cover`: MUST be used for Slide 1. Put the main title in `action_title` and subtitle/context in `subtitle_or_context`.
    - `section_divider`: Use sparingly in decks with 8 or more slides to transition between major themes.
-   - `image_split`: Use for 20% to 35% of slides—specifically when explaining physical products, system architectures,
-     workflows, user scenarios, or concepts that audiences understand faster with a visual graphic.
+   - `image_split`: MUST be used for at least 1 to 3 slides in every deck of 4+ slides (20% to 35% of slides)—specifically
+     when explaining products, operations, system architectures, workflows, user scenarios, or concepts that benefit from a photo.
      Populate BOTH `image` AND `points` (2 to 3 structured takeaways).
-     Inside `image`, set `preferred_style`:
-       * Choose `'stock_photo'` for real-world scenes, human teams, offices, hardware, retail, or cities (provide tangible `search_keywords` for Unsplash).
-       * Choose `'ai_illustration'` for abstract software architectures, algorithms, data flows, or conceptual metaphors (provide a detailed `visual_prompt`).
+     Inside `image`, ALWAYS provide:
+       * `search_keywords`: 2 to 3 concrete, everyday English nouns for Unsplash stock photo search (e.g., "data center", "team meeting", "warehouse logistics", "solar panels"). Avoid long or overly abstract phrases.
+       * `visual_prompt`: a detailed 20 to 35 word English prompt for AI image fallback if no stock photo matches.
    - `three_cards`: Use when presenting 3 parallel pillars, modules, features, or strategic recommendations (`points` = 3 items).
    - `two_column`: Use for comparisons (Pros vs. Cons, Before vs. After, Problem vs. Solution). Populate BOTH `left_column` and `right_column`.
    - `kpi_metrics`: Use when highlighting 2 to 4 headline numbers/statistics from the text (`kpis`).
@@ -512,12 +518,24 @@ def resolve_model_options(provider: str, api_key: str, base_url: str, static_mod
     return ordered + ["Custom Model ID..."], f"Loaded {len(live)} live models from {provider}."
 
 
-def extract_clean_json_str(raw_text: str) -> str:
+def extract_clean_json_str(raw_text: Optional[str]) -> str:
     """
-    Strip <think>...</think> reasoning blocks and Markdown code fences from LLM responses
-    so Pydantic can reliably parse JSON across DeepSeek, Qwen, Llama, and OpenAI models.
+    Strip <think>...</think> reasoning blocks (including unclosed <think> tags) and Markdown
+    code fences from LLM responses so Pydantic can reliably parse JSON across DeepSeek, Qwen,
+    GPT-OSS, Llama, and OpenAI models.
     """
+    if not raw_text or not isinstance(raw_text, str):
+        return ""
+
     cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+    if "<think>" in cleaned:
+        think_pos = cleaned.find("<think>")
+        brace_after = cleaned.find("{", think_pos)
+        if brace_after != -1:
+            cleaned = (cleaned[:think_pos] + cleaned[brace_after:]).strip()
+        else:
+            cleaned = cleaned[:think_pos].strip()
+
     fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", cleaned, flags=re.DOTALL)
     if fence_match:
         return fence_match.group(1).strip()
@@ -544,7 +562,7 @@ def repair_json_str(raw_text: str) -> str:
     closing brace/bracket or missing closers at the end). Returns the original text unchanged
     if no repair produces a schema-valid outline.
     """
-    if _parses_as_outline(raw_text):
+    if not raw_text or _parses_as_outline(raw_text):
         return raw_text
 
     # Scan once, ignoring characters inside string literals
@@ -594,7 +612,9 @@ def call_openai_compatible_json(
     """
     Zero-dependency REST client for OpenAI-compatible chat completion endpoints
     (Groq, OpenAI, DeepSeek, OpenRouter, SiliconFlow, etc.).
-    Automatically retries without response_format if a reasoning model rejects json_object mode.
+    Explicitly budgets completion tokens (8192) and lowers reasoning effort on reasoning
+    models (such as Groq's `openai/gpt-oss-120b` and `qwen/qwen3-32b`) so they never
+    exhaust the default 1024-token ceiling on internal thinking and return `content: ""`.
     """
     schema_json = json.dumps(PresentationOutline.model_json_schema(), ensure_ascii=False)
     full_system_prompt = (
@@ -613,59 +633,128 @@ def call_openai_compatible_json(
         "User-Agent": "ChatPPT-V2/2.0",
     }
 
+    url_lower = base_url.lower()
+    model_lower = model_name.lower()
+    is_groq = "groq.com" in url_lower
+    is_openai = "openai.com" in url_lower
+
+    last_finish_reason = None
+
     for use_json_mode in (True, False):
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": full_system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.3,
-        }
-        if use_json_mode:
-            payload["response_format"] = {"type": "json_object"}
+        for include_extra_params in (True, False):
+            payload: Dict[str, object] = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": full_system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.3,
+            }
+            if use_json_mode:
+                payload["response_format"] = {"type": "json_object"}
 
-        req = urllib.request.Request(
-            base_url.strip(),
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                resp_data = json.loads(resp.read().decode("utf-8"))
-                content = resp_data["choices"][0]["message"]["content"]
-                return extract_clean_json_str(content)
-        except urllib.error.HTTPError as http_err:
-            err_body = http_err.read().decode("utf-8", errors="ignore")
-            lowered_err = err_body.lower()
-            if http_err.code == 400:
-                # Groq-style "json_validate_failed": the server rejected the model's malformed JSON
-                # but returns the raw text in `failed_generation`; try to repair it locally.
-                try:
-                    failed_text = json.loads(err_body).get("error", {}).get("failed_generation")
-                except (ValueError, AttributeError):
-                    failed_text = None
-                if isinstance(failed_text, str) and failed_text.strip():
-                    repaired = repair_json_str(extract_clean_json_str(failed_text))
-                    if _parses_as_outline(repaired):
-                        return repaired
-                # Model rejected json_object mode or produced invalid JSON in strict mode:
-                # retry once without response_format and let the local parser/repair handle it.
-                if use_json_mode and (
-                    "response_format" in lowered_err
-                    or "json_validate_failed" in lowered_err
-                    or "failed to generate json" in lowered_err
-                ):
-                    continue
-            raise RuntimeError(f"Provider API HTTP {http_err.code}: {err_body}") from http_err
+            if include_extra_params:
+                # Reasoning models (e.g. Groq openai/gpt-oss-120b) default to 1024 max_completion_tokens
+                # and spend all of it inside `message.reasoning`, leaving `message.content` empty ("").
+                if is_groq or is_openai or model_lower.startswith(("o1", "o3", "o4", "gpt-5")):
+                    payload["max_completion_tokens"] = 8192
+                else:
+                    payload["max_tokens"] = 8192
+
+                if "gpt-oss" in model_lower:
+                    payload["reasoning_effort"] = "low"
+                elif is_groq and "qwen3" in model_lower:
+                    payload["reasoning_effort"] = "none"
+
+            req = urllib.request.Request(
+                base_url.strip(),
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=90) as resp:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+                    choice0 = (resp_data.get("choices") or [{}])[0]
+                    last_finish_reason = choice0.get("finish_reason")
+                    msg = choice0.get("message") or {}
+                    content = msg.get("content") or ""
+                    cleaned = extract_clean_json_str(content)
+
+                    # If content is empty, check if the model placed JSON inside a reasoning field
+                    if not cleaned or "{" not in cleaned:
+                        reasoning_raw = msg.get("reasoning") or msg.get("reasoning_content") or ""
+                        cand = extract_clean_json_str(reasoning_raw)
+                        if cand and _parses_as_outline(repair_json_str(cand)):
+                            return repair_json_str(cand)
+
+                    if cleaned and "{" in cleaned:
+                        return cleaned
+
+                    # Empty content returned (e.g. json_object mode rejected silently or token limit hit):
+                    # break inner loop to retry without json_object mode.
+                    break
+            except urllib.error.HTTPError as http_err:
+                err_body = http_err.read().decode("utf-8", errors="ignore")
+                lowered_err = err_body.lower()
+                if http_err.code == 400:
+                    # 1. Groq-style "json_validate_failed": repair `failed_generation` if present
+                    try:
+                        failed_text = json.loads(err_body).get("error", {}).get("failed_generation")
+                    except (ValueError, AttributeError):
+                        failed_text = None
+                    if isinstance(failed_text, str) and failed_text.strip():
+                        repaired = repair_json_str(extract_clean_json_str(failed_text))
+                        if _parses_as_outline(repaired):
+                            return repaired
+
+                    # 2. Endpoint rejected max_completion_tokens / max_tokens / reasoning_effort:
+                    # retry immediately without those optional parameters
+                    if include_extra_params and any(
+                        k in lowered_err
+                        for k in ("max_completion_tokens", "max_tokens", "reasoning_effort", "unrecognized", "unknown")
+                    ):
+                        continue
+
+                    # 3. Model rejected json_object mode or failed strict JSON generation:
+                    # break inner loop to retry with use_json_mode=False
+                    if use_json_mode and (
+                        "response_format" in lowered_err
+                        or "json_validate_failed" in lowered_err
+                        or "failed to generate json" in lowered_err
+                        or "json" in lowered_err
+                    ):
+                        break
+                raise RuntimeError(f"Provider API HTTP {http_err.code}: {err_body}") from http_err
+
+    raise RuntimeError(
+        f"The model `{model_name}` returned an empty response (finish_reason={last_finish_reason!r}). "
+        "It may have exhausted its output token limit during internal reasoning. "
+        "Please try again or switch to another model (such as `llama-3.3-70b-versatile`)."
+    )
 
 
-def sanitize_outline_dict(outline: PresentationOutline) -> List[dict]:
+def _derive_fallback_keywords(text: str) -> str:
+    """Extract 2-3 clean ASCII words from a title for Unsplash search fallback, or return a safe default."""
+    words = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", text or "") if w.lower() not in {
+        "that", "with", "from", "this", "have", "were", "their", "across", "through", "into", "over", "more", "than"
+    }]
+    if len(words) >= 2:
+        return " ".join(words[:3])
+    return "business technology office"
+
+
+def sanitize_outline_dict(
+    outline: PresentationOutline,
+    default_image_mode: str = IMAGE_MODE_UNSPLASH_FIRST,
+) -> List[dict]:
     """
     Validate and repair LLM output edge cases and return a clean list of slide dictionaries
     with all sub-structures initialized for safe UI editing and PPTX rendering.
     """
+    if default_image_mode not in IMAGE_MODE_OPTIONS:
+        default_image_mode = IMAGE_MODE_UNSPLASH_FIRST
+
     sanitized_slides = []
 
     for idx, slide in enumerate(outline.slides):
@@ -726,24 +815,50 @@ def sanitize_outline_dict(outline: PresentationOutline) -> List[dict]:
                 chart["values"] = chart["values"][:min_len]
 
         # Validate or initialize image spec
+        fallback_kw = _derive_fallback_keywords(s_dict.get("action_title", ""))
         if not s_dict.get("image"):
             s_dict["image"] = {
-                "preferred_style": VisualStyle.AI_ILLUSTRATION.value,
-                "visual_prompt": f"Clean modern corporate illustration representing {s_dict['action_title']}, minimal vector style, no text",
-                "search_keywords": "modern technology business",
+                "preferred_style": VisualStyle.STOCK_PHOTO.value,
+                "visual_prompt": (
+                    f"Clean modern corporate illustration representing {s_dict['action_title']}, "
+                    "minimal vector style, no text"
+                ),
+                "search_keywords": fallback_kw,
                 "caption": s_dict["action_title"],
                 "placement": ImagePlacement.LEFT.value if idx % 2 == 0 else ImagePlacement.RIGHT.value,
             }
-        elif not s_dict["image"].get("preferred_style"):
-            s_dict["image"]["preferred_style"] = VisualStyle.AI_ILLUSTRATION.value
+        else:
+            s_dict["image"]["preferred_style"] = VisualStyle.STOCK_PHOTO.value
+            if not (s_dict["image"].get("search_keywords") or "").strip():
+                s_dict["image"]["search_keywords"] = fallback_kw
+            if not (s_dict["image"].get("visual_prompt") or "").strip():
+                s_dict["image"]["visual_prompt"] = (
+                    f"Clean modern corporate illustration representing {s_dict['action_title']}, "
+                    "minimal vector style, no text"
+                )
 
         s_dict["layout_type"] = layout
-        # Default UI image source selection to Smart Hybrid (Auto)
-        s_dict["image_source_mode"] = "Smart Hybrid (Auto)"
-        s_dict["selected_report_image_idx"] = 0
-        s_dict["custom_uploaded_image_bytes"] = None
+        # Default to Option 1 (Unsplash Photo First, Fallback to AI) unless the user selected Option 2
+        s_dict["image_source_mode"] = default_image_mode
 
         sanitized_slides.append(s_dict)
+
+    # Guarantee at least one image_split slide in decks of 4+ slides so photos/placeholders appear
+    if len(sanitized_slides) >= 4 and not any(
+        s["layout_type"] == LayoutType.IMAGE_SPLIT.value for s in sanitized_slides
+    ):
+        candidate_indices = [
+            i for i in range(1, len(sanitized_slides))
+            if sanitized_slides[i]["layout_type"] in (LayoutType.BULLET_CARDS.value, LayoutType.THREE_CARDS.value)
+        ]
+        if not candidate_indices:
+            candidate_indices = [
+                i for i in range(1, len(sanitized_slides))
+                if sanitized_slides[i]["layout_type"] != LayoutType.SECTION_DIVIDER.value
+            ]
+        if candidate_indices:
+            mid_idx = candidate_indices[len(candidate_indices) // 2]
+            sanitized_slides[mid_idx]["layout_type"] = LayoutType.IMAGE_SPLIT.value
 
     return sanitized_slides
 
@@ -770,30 +885,43 @@ def _request_outline(
     user_prompt: str,
     custom_base_url: Optional[str],
 ) -> PresentationOutline:
-    """Send one outline request to the selected provider and return the validated outline."""
-    if provider == "Google Gemini":
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=model_name,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                response_mime_type="application/json",
-                response_schema=PresentationOutline,
-                temperature=0.3,
-            ),
-        )
-        raw_json = extract_clean_json_str(response.text)
-    else:
-        endpoint_url = custom_base_url or LLM_PROVIDERS[provider]["base_url"]
-        raw_json = call_openai_compatible_json(
-            base_url=endpoint_url,
-            api_key=api_key,
-            model_name=model_name,
-            system_prompt=SYSTEM_INSTRUCTION,
-            user_prompt=user_prompt,
-        )
-    return PresentationOutline.model_validate_json(repair_json_str(raw_json))
+    """
+    Send an outline request to the selected provider and return the validated PresentationOutline.
+    Retries once automatically if the model returns transient malformed or empty JSON.
+    """
+    last_err: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            if provider == "Google Gemini":
+                client = genai.Client(api_key=api_key)
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_INSTRUCTION,
+                        response_mime_type="application/json",
+                        response_schema=PresentationOutline,
+                        temperature=0.3,
+                    ),
+                )
+                raw_json = extract_clean_json_str(getattr(response, "text", None) or "")
+                if not raw_json:
+                    raise RuntimeError(f"Google Gemini (`{model_name}`) returned an empty response.")
+            else:
+                endpoint_url = custom_base_url or LLM_PROVIDERS[provider]["base_url"]
+                raw_json = call_openai_compatible_json(
+                    base_url=endpoint_url,
+                    api_key=api_key,
+                    model_name=model_name,
+                    system_prompt=SYSTEM_INSTRUCTION,
+                    user_prompt=user_prompt,
+                )
+            return PresentationOutline.model_validate_json(repair_json_str(raw_json))
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            if attempt == 0:
+                continue
+            raise last_err
 
 
 def _build_count_correction(outline: PresentationOutline, num_slides: int) -> str:
@@ -839,6 +967,7 @@ def generate_smart_outline(
     model_name: str,
     custom_base_url: Optional[str] = None,
     enforce_count: bool = True,
+    default_image_mode: str = IMAGE_MODE_UNSPLASH_FIRST,
 ) -> Tuple[List[dict], Optional[str]]:
     """
     Multi-Provider Outline Generator:
@@ -913,47 +1042,84 @@ def generate_smart_outline(
                 "Try a larger model, or ask for more with a follow-up such as “add 2 more slides”."
             )
 
-    return sanitize_outline_dict(outline), warning
+    return sanitize_outline_dict(outline, default_image_mode=default_image_mode), warning
 
 
 # =====================================================================
-# 5. Smart Hybrid Image Engine (Unsplash API + Gemini AI + Fallback)
+# 5. Two-Option Image Engine (1. Unsplash -> AI Fallback, 2. Placeholder)
 # =====================================================================
+
+def _clean_unsplash_key(raw_key: Optional[str]) -> str:
+    """Normalize an Unsplash Access Key and strip accidental 'Client-ID ' or 'Bearer ' prefixes."""
+    key = (raw_key or "").strip()
+    for prefix in ("Client-ID ", "client-id ", "Bearer ", "bearer "):
+        if key.startswith(prefix):
+            key = key[len(prefix):].strip()
+    return key
+
+
+def _query_unsplash_once(query_text: str, access_key: str) -> Optional[bytes]:
+    """Run a single Unsplash search query and download the first landscape photo."""
+    q = urllib.parse.quote(query_text.strip())
+    if not q:
+        return None
+    api_url = (
+        f"https://api.unsplash.com/search/photos"
+        f"?query={q}&per_page=1&orientation=landscape&content_filter=high"
+    )
+    req = urllib.request.Request(
+        api_url,
+        headers={
+            "Authorization": f"Client-ID {access_key}",
+            "Accept-Version": "v1",
+            "User-Agent": "ChatPPT-V2",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        results = data.get("results", [])
+        if not results:
+            return None
+        img_url = results[0]["urls"]["regular"]
+
+    img_req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(img_req, timeout=12) as img_resp:
+        return img_resp.read()
+
 
 def fetch_unsplash_image_bytes(search_keywords: str, unsplash_access_key: Optional[str]) -> Optional[bytes]:
     """
     Query Unsplash Search API for a high-resolution landscape stock photo matching search_keywords.
-    Returns raw image bytes or None if no key/results are available.
+    If a multi-word query yields 0 results, retries with the first 2 keywords before returning None.
     """
-    if not unsplash_access_key or not search_keywords:
+    access_key = _clean_unsplash_key(unsplash_access_key)
+    if not access_key or not (search_keywords or "").strip():
         return None
 
-    try:
-        query = urllib.parse.quote(search_keywords.strip())
-        api_url = (
-            f"https://api.unsplash.com/search/photos"
-            f"?query={query}&per_page=1&orientation=landscape&content_filter=high"
-        )
-        req = urllib.request.Request(
-            api_url,
-            headers={
-                "Authorization": f"Client-ID {unsplash_access_key.strip()}",
-                "Accept-Version": "v1",
-                "User-Agent": "ChatPPT-V2",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            results = data.get("results", [])
-            if not results:
+    cleaned_kw = re.sub(r"[^\w\s-]", " ", search_keywords).strip()
+    words = [w for w in cleaned_kw.split() if w]
+    if not words:
+        return None
+
+    candidate_queries = [" ".join(words)]
+    if len(words) > 2:
+        short_q = " ".join(words[:2])
+        if short_q not in candidate_queries:
+            candidate_queries.append(short_q)
+
+    for q in candidate_queries:
+        try:
+            img_bytes = _query_unsplash_once(q, access_key)
+            if img_bytes:
+                return img_bytes
+        except urllib.error.HTTPError as http_err:
+            # Stop retrying on auth/rate-limit errors (401/403/429)
+            if http_err.code in (401, 403, 429):
                 return None
-            img_url = results[0]["urls"]["regular"]
+        except Exception:
+            continue
 
-        img_req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(img_req, timeout=10) as img_resp:
-            return img_resp.read()
-    except Exception:
-        return None
+    return None
 
 
 def generate_ai_image_bytes(
@@ -962,7 +1128,7 @@ def generate_ai_image_bytes(
     use_imagen: bool = False
 ) -> Optional[bytes]:
     """
-    Generate a 4:3 conceptual illustration for a slide.
+    Generate a 4:3 conceptual illustration for a slide when Unsplash has no photo or no key.
     Tries Google Imagen 3 first (if enabled and a Gemini API key is available),
     and falls back to Pollinations AI stream.
     """
@@ -989,10 +1155,13 @@ def generate_ai_image_bytes(
             pass
 
     try:
-        encoded_prompt = urllib.parse.quote(enhanced_prompt)
+        encoded_prompt = urllib.parse.quote(enhanced_prompt[:300])
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=600&nologo=true&seed=42"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=12) as response:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "image/*,*/*;q=0.8"},
+        )
+        with urllib.request.urlopen(req, timeout=18) as response:
             return response.read()
     except Exception:
         return None
@@ -1003,54 +1172,30 @@ def resolve_slide_image_bytes(
     gemini_api_key: Optional[str],
     use_imagen: bool,
     unsplash_access_key: str,
-    extracted_report_images: List[Dict[str, bytes]],
+    extracted_report_images: Optional[List[Dict[str, bytes]]] = None,
+    default_image_mode: str = IMAGE_MODE_UNSPLASH_FIRST,
 ) -> Optional[bytes]:
     """
-    Smart Hybrid Image Resolver:
-    Routes image retrieval across Custom Uploads, Extracted Report Figures,
-    Unsplash Stock Photography, and AI Concept Illustrations with automatic fallback.
+    Two-Option Image Resolver:
+    1. IMAGE_MODE_UNSPLASH_FIRST (default): Query Unsplash stock photos first; if no key or no match,
+       automatically fall back to AI image generation.
+    2. IMAGE_MODE_PLACEHOLDER: Return None so the slide renders a clean reserved photo placeholder box.
     """
-    src_mode = slide_data.get("image_source_mode", "Smart Hybrid (Auto)")
-    image_spec = slide_data.get("image") or {}
-    preferred_style = image_spec.get("preferred_style", VisualStyle.AI_ILLUSTRATION.value)
-    visual_prompt = image_spec.get("visual_prompt") or slide_data.get("action_title", "Corporate illustration")
-    search_keywords = image_spec.get("search_keywords") or slide_data.get("action_title", "business technology")
-
-    # 1. Explicit Custom Upload
-    if src_mode == "Upload Custom Image" and slide_data.get("custom_uploaded_image_bytes"):
-        return slide_data["custom_uploaded_image_bytes"]
-
-    # 2. Explicit Report Embedded Image
-    if src_mode == "Use Image from Report" and extracted_report_images:
-        sel_idx = min(slide_data.get("selected_report_image_idx", 0), len(extracted_report_images) - 1)
-        return extracted_report_images[sel_idx]["bytes"]
-
-    # 3. Explicit Placeholder Only
-    if src_mode == "Visual Placeholder Only":
+    src_mode = slide_data.get("image_source_mode") or default_image_mode
+    if src_mode == IMAGE_MODE_PLACEHOLDER:
         return None
 
-    # 4. Explicit Unsplash Stock Photo (falls back to AI if Unsplash has no match or no key)
-    if src_mode == "Unsplash Stock Photo":
-        img_bytes = fetch_unsplash_image_bytes(search_keywords, unsplash_access_key)
-        if img_bytes:
-            return img_bytes
-        return generate_ai_image_bytes(visual_prompt, gemini_api_key=gemini_api_key, use_imagen=use_imagen)
+    image_spec = slide_data.get("image") or {}
+    action_title = slide_data.get("action_title", "Corporate illustration")
+    visual_prompt = (image_spec.get("visual_prompt") or "").strip() or action_title
+    search_keywords = (image_spec.get("search_keywords") or "").strip() or _derive_fallback_keywords(action_title)
 
-    # 5. Explicit AI Generated Illustration
-    if src_mode == "AI Generated Illustration":
-        return generate_ai_image_bytes(visual_prompt, gemini_api_key=gemini_api_key, use_imagen=use_imagen)
+    # Option 1 (default): Prioritize Unsplash photo; if unavailable or no result, fall back to AI generation
+    img_bytes = fetch_unsplash_image_bytes(search_keywords, unsplash_access_key)
+    if img_bytes:
+        return img_bytes
 
-    # 6. Smart Hybrid (Auto) — Follows LLM's per-slide `preferred_style` with cross-fallback
-    if preferred_style == VisualStyle.STOCK_PHOTO.value and unsplash_access_key:
-        img_bytes = fetch_unsplash_image_bytes(search_keywords, unsplash_access_key)
-        if img_bytes:
-            return img_bytes
-        return generate_ai_image_bytes(visual_prompt, gemini_api_key=gemini_api_key, use_imagen=use_imagen)
-    else:
-        img_bytes = generate_ai_image_bytes(visual_prompt, gemini_api_key=gemini_api_key, use_imagen=use_imagen)
-        if img_bytes:
-            return img_bytes
-        return fetch_unsplash_image_bytes(search_keywords, unsplash_access_key)
+    return generate_ai_image_bytes(visual_prompt, gemini_api_key=gemini_api_key, use_imagen=use_imagen)
 
 
 def add_picture_fitted(
@@ -1352,7 +1497,6 @@ def extract_template_style(
     content_bg_tuple = sampled.get("content_bg")
     if content_bg_tuple is None:
         lt1 = scheme_colors.get("lt1", (255, 255, 255))
-        dk1 = scheme_colors.get("dk1", (15, 37, 55))
         content_bg_tuple = lt1
 
     cover_bg_tuple = sampled.get("cover_bg") or scheme_colors.get("dk2") or scheme_colors.get("dk1") or content_bg_tuple
@@ -2208,14 +2352,14 @@ def render_image_split_slide(
         )
 
     if not inserted:
-        # Styled Visual Blueprint Placeholder
+        # Styled Reserved Photo Placeholder
         ph_box = slide.shapes.add_textbox(
             Inches(img_left + 0.3), Inches(img_top + 0.6), Inches(img_w - 0.6), Inches(img_h - 0.7)
         )
         tf_ph = ph_box.text_frame
         tf_ph.word_wrap = True
         p_ph = tf_ph.paragraphs[0]
-        p_ph.text = f"🖼️ [ Visual Concept Placeholder ]\n\nKeywords: {search_kw}\nPrompt: {visual_prompt}"
+        p_ph.text = f"🖼️ [ Reserved Photo Placeholder ]\n\nKeywords: {search_kw}\nPrompt: {visual_prompt}"
         p_ph.alignment = PP_ALIGN.CENTER
         p_ph.font.size = Pt(12.5)
         p_ph.font.color.rgb = theme["body_content"]
@@ -2268,6 +2412,7 @@ def build_presentation_pptx(
     extracted_report_images: List[Dict[str, bytes]],
     custom_template_bytes: Optional[bytes] = None,
     use_template_colors: bool = True,
+    default_image_mode: str = IMAGE_MODE_UNSPLASH_FIRST,
 ) -> bytes:
     """
     Assemble the complete .pptx presentation across all 8 visual layouts.
@@ -2338,6 +2483,7 @@ def build_presentation_pptx(
                     use_imagen=use_imagen,
                     unsplash_access_key=unsplash_access_key,
                     extracted_report_images=extracted_report_images,
+                    default_image_mode=default_image_mode,
                 )
                 render_image_split_slide(slide, slide_data, theme, img_bytes=img_bytes)
 
@@ -2548,11 +2694,14 @@ def init_state() -> None:
             "provider": next(iter(LLM_PROVIDERS)),
             "models": {},
             "custom_base_url": LLM_PROVIDERS[CUSTOM_PROVIDER]["base_url"] or "",
+            "image_mode": IMAGE_MODE_UNSPLASH_FIRST,
             "unsplash_key": "",
             "use_imagen": False,
         }
     ss.settings.setdefault("provider", next(iter(LLM_PROVIDERS)))
     ss.settings.setdefault("models", {})
+    if ss.settings.get("image_mode") not in IMAGE_MODE_OPTIONS:
+        ss.settings["image_mode"] = IMAGE_MODE_UNSPLASH_FIRST
     ss.setdefault("custom_tpl_bytes", None)
     ss.setdefault("custom_tpl_name", None)
     if "chats" not in ss:
@@ -2585,7 +2734,7 @@ def open_settings() -> None:
 
 @st.dialog("⚙️ Settings", width="large")
 def settings_dialog() -> None:
-    """One page, one Save: provider -> API key -> model, then optional image keys."""
+    """One page, one Save: provider -> API key -> model, then two-option image settings."""
     ss = st.session_state
     s = ss.settings
     draft = ss.setdefault("_settings_draft", {"keys": {}, "models": {}, "custom_url": None})
@@ -2659,20 +2808,30 @@ def settings_dialog() -> None:
     cap_col.caption(status)
     refresh_col.button("🔄 Refresh list", key="set_refresh", on_click=_refresh_model_list, use_container_width=True)
 
-    # --- 2. Images (same page, same Save) ---
+    # --- 2. Images (two choices, defaulting to Option 1) ---
     st.divider()
-    st.markdown("##### 2 · Images (optional)")
+    st.markdown("##### 2 · Images")
+    cur_img_mode = s.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST)
+    if cur_img_mode not in IMAGE_MODE_OPTIONS:
+        cur_img_mode = IMAGE_MODE_UNSPLASH_FIRST
+    image_mode = st.radio(
+        "Slide image mode",
+        IMAGE_MODE_OPTIONS,
+        index=IMAGE_MODE_OPTIONS.index(cur_img_mode),
+        help="Defaults to Option 1: search Unsplash first, and fall back to AI generation if no photo is found.",
+        key="set_image_mode",
+    )
     unsplash_key = st.text_input(
         "Unsplash Access Key",
         value=s["unsplash_key"],
         type="password",
-        help="Enables real stock photography. If blank, Smart Hybrid mode falls back to AI generation.",
+        help="Used when 'Unsplash Photo First (Fallback to AI)' is active. If blank or no photo matches, falls back to AI.",
         key="set_unsplash",
     ).strip()
     use_imagen = st.checkbox(
-        "Use Google Imagen 3 for AI illustrations",
+        "Use Google Imagen 3 for AI fallback",
         value=s["use_imagen"],
-        help="Falls back to Pollinations AI if unavailable. Uses the Google Gemini API key.",
+        help="When Unsplash has no photo (or no key), tries Google Imagen 3 first and falls back to Pollinations AI.",
         key="set_imagen",
     )
 
@@ -2691,8 +2850,17 @@ def settings_dialog() -> None:
                 s["models"][name] = value
         if draft["custom_url"] is not None:
             s["custom_base_url"] = draft["custom_url"]
-        s["unsplash_key"] = unsplash_key
+        prev_image_mode = s.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST)
+        s["image_mode"] = image_mode
+        s["unsplash_key"] = _clean_unsplash_key(unsplash_key)
         s["use_imagen"] = use_imagen
+        # Apply updated global image mode to existing slides in open chats
+        if image_mode != prev_image_mode:
+            for chat_obj in ss.chats.values():
+                if chat_obj.get("slides"):
+                    for sl in chat_obj["slides"]:
+                        sl["image_source_mode"] = image_mode
+                    chat_obj["gen"] += 1
         _refresh_model_list()
         ss.pop("_settings_draft", None)
         st.rerun()
@@ -2765,14 +2933,9 @@ def render_outline_editor(chat: dict) -> None:
     """Interactive per-slide editor. Widget keys are scoped by chat id + generation counter."""
     kp = f"{chat['id']}_{chat['gen']}_"
     layout_options = [lt.value for lt in LayoutType]
-    report_imgs = chat["report_images"]
-
-    if report_imgs:
-        with st.expander(f"🖼️ Preview {len(report_imgs)} Embedded Image(s) Extracted from Your Report"):
-            img_cols = st.columns(min(len(report_imgs), 4))
-            for r_idx, r_img in enumerate(report_imgs):
-                with img_cols[r_idx % 4]:
-                    st.image(r_img["bytes"], caption=f"[{r_idx}] {r_img['name']}", use_container_width=True)
+    default_img_mode = st.session_state.settings.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST)
+    if default_img_mode not in IMAGE_MODE_OPTIONS:
+        default_img_mode = IMAGE_MODE_UNSPLASH_FIRST
 
     updated_slides = []
 
@@ -2905,29 +3068,19 @@ def render_outline_editor(chat: dict) -> None:
 
             elif new_layout == LayoutType.IMAGE_SPLIT.value:
                 img_obj = slide.get("image") or {}
-                ai_rec_style = img_obj.get("preferred_style", VisualStyle.AI_ILLUSTRATION.value)
                 ic1, ic2 = st.columns(2)
 
                 with ic1:
-                    src_choices = [
-                        "Smart Hybrid (Auto)",
-                        "Unsplash Stock Photo",
-                        "AI Generated Illustration",
-                        "Upload Custom Image",
-                        "Visual Placeholder Only",
-                    ]
-                    if report_imgs:
-                        src_choices.insert(1, "Use Image from Report")
+                    cur_src = slide.get("image_source_mode") or default_img_mode
+                    if cur_src not in IMAGE_MODE_OPTIONS:
+                        cur_src = IMAGE_MODE_UNSPLASH_FIRST
 
-                    cur_src = slide.get("image_source_mode", "Smart Hybrid (Auto)")
-                    if cur_src not in src_choices:
-                        cur_src = src_choices[0]
-
-                    chosen_src = st.selectbox(
-                        f"Image Source (AI Auto-Recommendation: `{ai_rec_style}`)",
-                        options=src_choices,
-                        index=src_choices.index(cur_src),
+                    chosen_src = st.radio(
+                        "Image Mode",
+                        options=IMAGE_MODE_OPTIONS,
+                        index=IMAGE_MODE_OPTIONS.index(cur_src),
                         key=f"{kp}imgsrc_{idx}",
+                        help="Option 1 searches Unsplash first and falls back to AI if unavailable. Option 2 reserves a photo placeholder box.",
                     )
                     slide["image_source_mode"] = chosen_src
 
@@ -2946,40 +3099,13 @@ def render_outline_editor(chat: dict) -> None:
                         key=f"{kp}ukw_{idx}",
                     )
                     new_vprompt = st.text_area(
-                        "AI Illustration Prompt (English)",
+                        "AI Fallback Prompt (English)",
                         value=img_obj.get("visual_prompt", ""),
                         height=75,
                         key=f"{kp}vprompt_{idx}",
                     )
 
-                    if chosen_src == "Use Image from Report" and report_imgs:
-                        rep_labels = [f"[{i}] {r['name']}" for i, r in enumerate(report_imgs)]
-                        sel_rep = st.selectbox(
-                            "Select Extracted Report Image",
-                            options=range(len(report_imgs)),
-                            format_func=lambda x: rep_labels[x],
-                            key=f"{kp}repimg_{idx}",
-                        )
-                        slide["selected_report_image_idx"] = sel_rep
-
-                    if chosen_src == "Upload Custom Image":
-                        up_custom_img = st.file_uploader(
-                            "Upload Slide Image (.png, .jpg, .webp)",
-                            type=["png", "jpg", "jpeg", "webp"],
-                            key=f"{kp}upimg_{idx}",
-                        )
-                        if up_custom_img is not None:
-                            slide["custom_uploaded_image_bytes"] = up_custom_img.getvalue()
-
                 with ic2:
-                    style_opts = [VisualStyle.STOCK_PHOTO.value, VisualStyle.AI_ILLUSTRATION.value]
-                    new_pref_style = st.selectbox(
-                        "Smart Hybrid Preferred Style",
-                        options=style_opts,
-                        index=style_opts.index(ai_rec_style) if ai_rec_style in style_opts else 1,
-                        key=f"{kp}prefstyle_{idx}",
-                        help="In 'Smart Hybrid (Auto)' mode, 'stock_photo' queries Unsplash first (then falls back to AI), while 'ai_illustration' generates a custom graphic directly.",
-                    )
                     new_caption = st.text_input(
                         "Image Caption",
                         value=img_obj.get("caption", ""),
@@ -2988,13 +3114,13 @@ def render_outline_editor(chat: dict) -> None:
                     raw_i_pts = st.text_area(
                         "Accompanying Key Points (`Heading :: Detail`)",
                         value=format_points_for_editor(slide.get("points", [])),
-                        height=135,
+                        height=175,
                         key=f"{kp}ipts_{idx}",
                     )
                     slide["points"] = parse_points_from_editor(raw_i_pts)
 
                 slide["image"] = {
-                    "preferred_style": new_pref_style,
+                    "preferred_style": VisualStyle.STOCK_PHOTO.value,
                     "visual_prompt": new_vprompt,
                     "search_keywords": new_kw,
                     "caption": new_caption,
@@ -3053,6 +3179,7 @@ def render_export_block(chat: dict) -> None:
                         extracted_report_images=chat["report_images"],
                         custom_template_bytes=tpl_bytes if use_custom_tpl else None,
                         use_template_colors=use_tpl_colors,
+                        default_image_mode=s.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST),
                     )
                     st.success("Presentation rendered! Download it below.")
                 except Exception as e:  # noqa: BLE001
@@ -3219,9 +3346,9 @@ def render_composer(chat: dict) -> None:
                     "Report file",
                     type=["pdf", "docx", "txt", "md"],
                     key=file_key,
-                    help="Embedded images in PDF/DOCX files are extracted automatically.",
+                    help="Attach a PDF, DOCX, TXT, or MD report.",
                 )
-                st.caption("PDF · DOCX · TXT · MD — embedded figures can be reused on slides.")
+                st.caption("PDF · DOCX · TXT · MD")
 
             with c_tpl.popover(tpl_label, use_container_width=True):
                 st.radio("Styling", ["Built-in 16:9 theme", "Custom .pptx template"], key="opt_tpl_mode")
@@ -3286,6 +3413,7 @@ def render_composer(chat: dict) -> None:
 def run_pending(chat: dict, container) -> None:
     """Run the queued outline generation inside the chat area, then rerun to show the result."""
     p = chat["pending"]
+    default_img_mode = st.session_state.settings.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST)
     with container:
         with st.chat_message("assistant", avatar="📊"):
             with st.spinner(f"Designing your deck with {p['provider']} · {p['model']}…"):
@@ -3300,14 +3428,14 @@ def run_pending(chat: dict, container) -> None:
                         model_name=p["model"],
                         custom_base_url=p["base_url"],
                         enforce_count=p.get("enforce_count", True),
+                        default_image_mode=default_img_mode,
                     )
                     chat["slides"] = slides
                     chat["gen"] += 1
                     chat["pptx_bytes"] = None
                     if slides and slides[0].get("action_title"):
                         chat["title"] = slides[0]["action_title"][:40]
-                    n_img = len(chat["report_images"])
-                    note = f" Found {n_img} embedded image(s) in your file." if n_img else ""
+                    note = ""
                     if count_warning:
                         note += f"\n\n⚠️ {count_warning}"
                     chat["messages"].append(
