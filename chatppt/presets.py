@@ -156,3 +156,4 @@ LANGUAGE_OPTIONS = ["English", "Simplified Chinese", "Traditional Chinese", "Mal
 
 
 REVISION_MAX_CHARS = 600  # Short follow-up messages are treated as revision instructions
+PATCH_MAX_SLIDES = 5  # A targeted edit may rewrite at most this many slides; larger edits regenerate the deck

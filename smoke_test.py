@@ -162,11 +162,63 @@ def check_assistant() -> None:
     )
     for marker in ("SOURCE_MARKER", "Three cards title", "KPI title", "HISTORY_MARKER", "why three cards?"):
         assert marker in prompt, marker
-    print("[ok] assistant routing + prompt context")
+    # Targeted edits: PATCH with valid slide numbers; anything unusable degrades to a full revise
+    dec = parse_assistant_reply("ACTION: PATCH: 3, 5", deck_size=9)
+    assert dec.action == "patch" and dec.slides == [3, 5], dec
+    assert parse_assistant_reply("**ACTION: PATCH 2-4**", deck_size=9).slides == [2, 3, 4]
+    assert parse_assistant_reply("ACTION: PATCH: 12", deck_size=9).action == "revise"
+    assert parse_assistant_reply("ACTION: PATCH:", deck_size=9).action == "revise"
+    assert parse_assistant_reply("ACTION: PATCH: 1-9", deck_size=9).action == "revise"  # too many slides
+    # A long source is cut to relevant excerpts: a fact far past the first 12k chars must still reach the model
+    long_source = "Intro.\n\n" + "\n\n".join("Filler paragraph about logistics. " * 20 for _ in range(60))
+    long_source += "\n\nChurn fell to 3.2% after the NEEDLE loyalty program.\n\n" + "Tail filler. " * 400
+    prompt = build_assistant_prompt("what happened to churn after the loyalty program?", long_source, [], [])
+    assert "NEEDLE" in prompt and len(prompt) < 14000
+    print("[ok] assistant routing + prompt context + patch protocol")
+
+
+def check_retrieval() -> None:
+    from chatppt.retrieval import select_relevant_context, split_into_chunks, tokenize
+
+    assert "增长" in tokenize("营收增长62%") and "62%" in tokenize("营收增长62%")
+    assert all(len(c) <= 1000 for c in split_into_chunks("x" * 5000))
+    assert select_relevant_context("short text", "anything", 100) == "short text"
+    doc = "\n\n".join(f"Section {i}: generic operations text. " * 12 for i in range(40))
+    doc += "\n\n最终客户流失率下降到 3.2%。"
+    out = select_relevant_context(doc, "客户流失率是多少", 3000)
+    assert "3.2%" in out and len(out) <= 3000 + 20 and out.startswith("Section 0")
+    # Nothing matches -> head of the document, like the old truncation
+    assert select_relevant_context(doc, "zzz", 3000).startswith(doc[:2000])
+    print("[ok] retrieval: CJK bigrams, chunking, BM25 recall, head fallback")
+
+
+def check_patch() -> None:
+    import chatppt.outline as outline
+    from chatppt.schemas import SlidePatch, SlideSpec
+
+    deck = sample_slides()
+    deck[3]["image_source_mode"] = "Reserve Photo Placeholder"
+    new = SlideSpec(slide_number=4, layout_type="bullet_cards", action_title="Patched title",
+                    points=[{"heading": "H", "detail": "D"}])
+    stray_closing = SlideSpec(slide_number=5, layout_type="closing", action_title="Bye")
+    real = outline._request_outline
+    try:
+        outline._request_outline = lambda *a, **k: SlidePatch(slides=[new, stray_closing])
+        out = outline.patch_slides("Groq", "k", "m", None, deck, [4, 5], "rewrite", "source", "tone", "English")
+    finally:
+        outline._request_outline = real
+    assert len(out) == len(deck)
+    # Untouched slides are the very same objects: a patch can never drift them
+    assert all(out[i] is deck[i] for i in range(len(deck)) if i not in (3, 4))
+    assert out[3]["action_title"] == "Patched title" and out[3]["slide_number"] == 4
+    assert out[3]["image_source_mode"] == "Reserve Photo Placeholder"  # user's per-slide choice kept
+    assert out[4]["layout_type"] == "bullet_cards"  # closing is only allowed as the last slide
+    print("[ok] targeted patch: only target slides replaced, closing guard, image mode kept")
 
 
 if __name__ == "__main__":
-    for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide, check_assistant):
+    for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide,
+               check_assistant, check_retrieval, check_patch):
         fn()
     print("ALL SMOKE TESTS PASSED")
     sys.exit(0)

@@ -165,3 +165,11 @@ class SlideSpec(BaseModel):
 class PresentationOutline(BaseModel):
     deck_title: str = Field(description="Overall title of the slide deck.")
     slides: List[SlideSpec] = Field(description="Ordered list of slides matching the requested slide count.")
+
+
+class SlidePatch(BaseModel):
+    """Response of a targeted edit: only the rewritten slides, never the whole deck."""
+
+    slides: List[SlideSpec] = Field(
+        description="Only the rewritten slides, in the requested order, each keeping its original slide_number."
+    )

@@ -3,17 +3,111 @@
 Edit when: changing how the outline is requested, validated, trimmed, or normalized.
 """
 
+import json
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Type
 
 from google import genai
 from google.genai import types
+from pydantic import BaseModel
 
+from chatppt.chat_assistant import build_deck_digest
 from chatppt.images import _derive_fallback_keywords
 from chatppt.llm_client import call_openai_compatible_json, extract_clean_json_str, repair_json_str
 from chatppt.presets import LLM_PROVIDERS
 from chatppt.prompts import SYSTEM_INSTRUCTION
-from chatppt.schemas import ChartType, IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST, ImagePlacement, LayoutType, PresentationOutline, SlideSpec, VisualStyle
+from chatppt.retrieval import select_relevant_context
+from chatppt.schemas import ChartType, IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST, ImagePlacement, LayoutType, PresentationOutline, SlideSpec, SlidePatch, VisualStyle
+
+
+def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict:
+    """Repair one slide (0-based deck position `idx`) and fill every sub-structure the editor and renderer expect."""
+    s_dict = slide.model_dump()
+    s_dict["slide_number"] = idx + 1
+    layout = s_dict["layout_type"]
+
+    if idx == 0:
+        layout = LayoutType.COVER.value
+
+    # Ensure default points exist
+    if not s_dict.get("points"):
+        s_dict["points"] = [
+            {"heading": "Key Finding 1", "detail": s_dict.get("subtitle_or_context") or s_dict["action_title"]},
+            {"heading": "Key Finding 2", "detail": "Supporting evidence and operational impact from the report."},
+            {"heading": "Key Finding 3", "detail": "Strategic recommendation and next implementation phase."},
+        ]
+
+    # Ensure default two_column structures exist
+    if not s_dict.get("left_column"):
+        s_dict["left_column"] = {
+            "column_title": "Current State / Challenges",
+            "items": s_dict["points"][:2]
+        }
+    if not s_dict.get("right_column"):
+        s_dict["right_column"] = {
+            "column_title": "Target State / Solutions",
+            "items": s_dict["points"][-2:]
+        }
+
+    # Ensure default KPIs exist
+    if not s_dict.get("kpis"):
+        s_dict["kpis"] = [
+            {"value": "100%", "label": "Core Target", "context": "Primary benchmark highlighted in the report"},
+            {"value": "3.0x", "label": "Efficiency Gain", "context": "Expected improvement across key workflows"},
+            {"value": "-40%", "label": "Overhead Reduction", "context": "Estimated operational savings"},
+        ]
+
+    # Validate or initialize chart structure
+    chart = s_dict.get("chart")
+    if not chart or not chart.get("categories") or not chart.get("values"):
+        if layout == LayoutType.CHART_SLIDE.value:
+            layout = LayoutType.BULLET_CARDS.value
+        s_dict["chart"] = {
+            "chart_type": ChartType.BAR.value,
+            "chart_title": "Performance Comparison",
+            "categories": ["Category A", "Category B", "Category C"],
+            "series_name": "Metric Value",
+            "values": [45.0, 72.0, 95.0],
+        }
+    else:
+        min_len = min(len(chart["categories"]), len(chart["values"]))
+        if min_len < 2:
+            if layout == LayoutType.CHART_SLIDE.value:
+                layout = LayoutType.BULLET_CARDS.value
+        else:
+            chart["categories"] = chart["categories"][:min_len]
+            chart["values"] = chart["values"][:min_len]
+
+    # Validate or initialize image spec
+    fallback_kw = _derive_fallback_keywords(s_dict.get("action_title", ""))
+    if not s_dict.get("image"):
+        s_dict["image"] = {
+            "preferred_style": VisualStyle.STOCK_PHOTO.value,
+            "visual_prompt": (
+                f"Clean modern corporate illustration representing {s_dict['action_title']}, "
+                "minimal vector style, no text"
+            ),
+            "search_keywords": fallback_kw,
+            "caption": s_dict["action_title"],
+            "placement": ImagePlacement.LEFT.value if idx % 2 == 0 else ImagePlacement.RIGHT.value,
+        }
+    else:
+        s_dict["image"]["preferred_style"] = VisualStyle.STOCK_PHOTO.value
+        if not (s_dict["image"].get("search_keywords") or "").strip():
+            s_dict["image"]["search_keywords"] = fallback_kw
+        if not (s_dict["image"].get("visual_prompt") or "").strip():
+            s_dict["image"]["visual_prompt"] = (
+                f"Clean modern corporate illustration representing {s_dict['action_title']}, "
+                "minimal vector style, no text"
+            )
+
+    if layout == LayoutType.CLOSING.value:
+        s_dict["bottom_takeaway"] = None  # a closing slide never carries a takeaway banner
+    s_dict["layout_type"] = layout
+    # Default to Option 1 (Unsplash Photo First, Fallback to AI) unless the user selected Option 2
+    s_dict["image_source_mode"] = default_image_mode
+
+    return s_dict
 
 
 def sanitize_outline_dict(
@@ -37,92 +131,7 @@ def sanitize_outline_dict(
         slides = other_slides + [closing_slides[-1]]
 
     for idx, slide in enumerate(slides):
-        s_dict = slide.model_dump()
-        s_dict["slide_number"] = idx + 1
-        layout = s_dict["layout_type"]
-
-        if idx == 0:
-            layout = LayoutType.COVER.value
-
-        # Ensure default points exist
-        if not s_dict.get("points"):
-            s_dict["points"] = [
-                {"heading": "Key Finding 1", "detail": s_dict.get("subtitle_or_context") or s_dict["action_title"]},
-                {"heading": "Key Finding 2", "detail": "Supporting evidence and operational impact from the report."},
-                {"heading": "Key Finding 3", "detail": "Strategic recommendation and next implementation phase."},
-            ]
-
-        # Ensure default two_column structures exist
-        if not s_dict.get("left_column"):
-            s_dict["left_column"] = {
-                "column_title": "Current State / Challenges",
-                "items": s_dict["points"][:2]
-            }
-        if not s_dict.get("right_column"):
-            s_dict["right_column"] = {
-                "column_title": "Target State / Solutions",
-                "items": s_dict["points"][-2:]
-            }
-
-        # Ensure default KPIs exist
-        if not s_dict.get("kpis"):
-            s_dict["kpis"] = [
-                {"value": "100%", "label": "Core Target", "context": "Primary benchmark highlighted in the report"},
-                {"value": "3.0x", "label": "Efficiency Gain", "context": "Expected improvement across key workflows"},
-                {"value": "-40%", "label": "Overhead Reduction", "context": "Estimated operational savings"},
-            ]
-
-        # Validate or initialize chart structure
-        chart = s_dict.get("chart")
-        if not chart or not chart.get("categories") or not chart.get("values"):
-            if layout == LayoutType.CHART_SLIDE.value:
-                layout = LayoutType.BULLET_CARDS.value
-            s_dict["chart"] = {
-                "chart_type": ChartType.BAR.value,
-                "chart_title": "Performance Comparison",
-                "categories": ["Category A", "Category B", "Category C"],
-                "series_name": "Metric Value",
-                "values": [45.0, 72.0, 95.0],
-            }
-        else:
-            min_len = min(len(chart["categories"]), len(chart["values"]))
-            if min_len < 2:
-                if layout == LayoutType.CHART_SLIDE.value:
-                    layout = LayoutType.BULLET_CARDS.value
-            else:
-                chart["categories"] = chart["categories"][:min_len]
-                chart["values"] = chart["values"][:min_len]
-
-        # Validate or initialize image spec
-        fallback_kw = _derive_fallback_keywords(s_dict.get("action_title", ""))
-        if not s_dict.get("image"):
-            s_dict["image"] = {
-                "preferred_style": VisualStyle.STOCK_PHOTO.value,
-                "visual_prompt": (
-                    f"Clean modern corporate illustration representing {s_dict['action_title']}, "
-                    "minimal vector style, no text"
-                ),
-                "search_keywords": fallback_kw,
-                "caption": s_dict["action_title"],
-                "placement": ImagePlacement.LEFT.value if idx % 2 == 0 else ImagePlacement.RIGHT.value,
-            }
-        else:
-            s_dict["image"]["preferred_style"] = VisualStyle.STOCK_PHOTO.value
-            if not (s_dict["image"].get("search_keywords") or "").strip():
-                s_dict["image"]["search_keywords"] = fallback_kw
-            if not (s_dict["image"].get("visual_prompt") or "").strip():
-                s_dict["image"]["visual_prompt"] = (
-                    f"Clean modern corporate illustration representing {s_dict['action_title']}, "
-                    "minimal vector style, no text"
-                )
-
-        if layout == LayoutType.CLOSING.value:
-            s_dict["bottom_takeaway"] = None  # a closing slide never carries a takeaway banner
-        s_dict["layout_type"] = layout
-        # Default to Option 1 (Unsplash Photo First, Fallback to AI) unless the user selected Option 2
-        s_dict["image_source_mode"] = default_image_mode
-
-        sanitized_slides.append(s_dict)
+        sanitized_slides.append(_sanitize_slide(slide, idx, default_image_mode))
 
     # Guarantee at least one image_split slide in decks of 4+ slides so photos/placeholders appear
     if len(sanitized_slides) >= 4 and not any(
@@ -229,9 +238,11 @@ def _request_outline(
     model_name: str,
     user_prompt: str,
     custom_base_url: Optional[str],
-) -> PresentationOutline:
+    response_model: Type[BaseModel] = PresentationOutline,
+) -> BaseModel:
     """
-    Send an outline request to the selected provider and return the validated PresentationOutline.
+    Send an outline request to the selected provider and return the validated `response_model`
+    (the full PresentationOutline by default, SlidePatch for targeted edits).
     Retries once automatically if the model returns transient malformed or empty JSON.
     """
     last_err: Optional[Exception] = None
@@ -245,7 +256,7 @@ def _request_outline(
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_INSTRUCTION,
                         response_mime_type="application/json",
-                        response_schema=PresentationOutline,
+                        response_schema=response_model,
                         temperature=0.3,
                     ),
                 )
@@ -260,8 +271,9 @@ def _request_outline(
                     model_name=model_name,
                     system_prompt=SYSTEM_INSTRUCTION,
                     user_prompt=user_prompt,
+                    response_model=response_model,
                 )
-            return PresentationOutline.model_validate_json(repair_json_str(raw_json))
+            return response_model.model_validate_json(repair_json_str(raw_json, response_model))
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             if attempt == 0:
@@ -390,3 +402,98 @@ def generate_smart_outline(
             )
 
     return sanitize_outline_dict(outline, default_image_mode=default_image_mode), warning
+
+
+# Source excerpt budget for a targeted edit (only chunks relevant to the edited slides are sent)
+PATCH_SOURCE_MAX_CHARS = 12000
+
+# Fields each layout actually uses; the sanitizer fills the others with placeholders the model must not see
+_LAYOUT_FIELDS = {
+    LayoutType.BULLET_CARDS.value: ("points",),
+    LayoutType.THREE_CARDS.value: ("points",),
+    LayoutType.TWO_COLUMN.value: ("left_column", "right_column"),
+    LayoutType.KPI_METRICS.value: ("kpis",),
+    LayoutType.CHART_SLIDE.value: ("points", "chart"),
+    LayoutType.IMAGE_SPLIT.value: ("points", "image"),
+}
+
+
+def _slide_for_prompt(slide: dict) -> dict:
+    """The parts of a slide dict that are visible on the rendered slide (what the model should edit)."""
+    keys = ("slide_number", "layout_type", "action_title", "subtitle_or_context", "bottom_takeaway")
+    keys += _LAYOUT_FIELDS.get(slide.get("layout_type"), ())
+    return {k: slide.get(k) for k in keys if slide.get(k) not in (None, "", [])}
+
+
+def patch_slides(
+    provider: str,
+    api_key: str,
+    model_name: str,
+    custom_base_url: Optional[str],
+    slides: List[dict],
+    targets: List[int],
+    instruction: str,
+    source_text: str,
+    tone: str,
+    language: str,
+) -> List[dict]:
+    """
+    Targeted edit: ask the model for ONLY the slides numbered in `targets` (1-based) and replace them in place.
+    Every other slide dict is returned as the very same object, so untouched slides cannot drift.
+    Raises if the model does not return one slide per target (the caller then regenerates the whole deck).
+    """
+    deck = list(slides or [])
+    targets = sorted({n for n in targets if 1 <= n <= len(deck)})
+    if not targets:
+        raise ValueError("No valid slide numbers to edit.")
+    current = [deck[n - 1] for n in targets]
+    nums = ", ".join(str(n) for n in targets)
+
+    query = f"{instruction}\n{build_deck_digest(current)}"
+    source = select_relevant_context(source_text, query, PATCH_SOURCE_MAX_CHARS)
+    current_json = json.dumps([_slide_for_prompt(s) for s in current], ensure_ascii=False, indent=1)
+    prompt = f"""
+    You are editing ONE PART of an existing {len(deck)}-slide deck. Rewrite ONLY slide(s) {nums}.
+
+    User instruction: {instruction}
+
+    Rules:
+    - Return a JSON object whose `slides` array contains exactly {len(targets)} slide object(s), one per slide {nums},
+      in that order, each keeping its original `slide_number`. NEVER return other slides.
+    - Apply the instruction. Keep everything it does not ask to change (facts, numbers, wording, layout).
+    - If the instruction asks for another layout, switch `layout_type` and fill every field that layout needs,
+      reusing the slide's existing content and the source excerpts. Never invent numbers.
+    - Slide 1 must stay `cover`. Use `closing` only for the last slide ({len(deck)}) and only if asked.
+    - Tone: {tone}. Output language: {language} (keep ONLY `visual_prompt` and `search_keywords` in English).
+
+    Whole deck, for context only:
+    {build_deck_digest(deck)}
+
+    Current content of the slide(s) to rewrite:
+    {current_json}
+
+    Source document excerpts ([...] marks skipped text):
+    \"\"\"
+    {source}
+    \"\"\"
+    """
+    result = _request_outline(provider, api_key, model_name, prompt, custom_base_url, response_model=SlidePatch)
+
+    got = list(result.slides)
+    by_number = {s.slide_number: s for s in got}
+    if len(got) == len(targets) and all(n in by_number for n in targets):
+        new_specs = [by_number[n] for n in targets]
+    elif len(got) == len(targets):
+        new_specs = got  # right count but renumbered: trust the order we asked for
+    else:
+        raise RuntimeError(f"The model returned {len(got)} slide(s) for the {len(targets)} requested.")
+
+    patched = list(deck)
+    for n, spec in zip(targets, new_specs):
+        if spec.layout_type == LayoutType.CLOSING and n != len(deck):
+            spec = spec.model_copy(update={"layout_type": LayoutType.BULLET_CARDS})
+        old = deck[n - 1]
+        # Keep the image option the user picked for this slide in the editor
+        mode = old.get("image_source_mode") if old.get("image_source_mode") in IMAGE_MODE_OPTIONS else IMAGE_MODE_UNSPLASH_FIRST
+        patched[n - 1] = _sanitize_slide(spec, n - 1, mode)
+    return patched

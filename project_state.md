@@ -3,8 +3,8 @@
 > **How to use:** paste/upload this file in a new chat together with ONLY the module file(s) the task needs (see 2 "Task -> files").
 > Read it fully before editing. At the end of every session update **Last updated, Commit Log, Pending, Changelog** and return the file.
 
-Last updated: 2026-10-17 (minimal opt-in `closing` thank-you layout)
-Commit Log: `feat(layout): add minimal closing (thank-you) layout, opt-in only; last-slide enforcement, trim-safe, editor + renderer support`
+Last updated: 2026-10-17 (targeted slide patching + BM25 chunk retrieval for long sources)
+Commit Log: `feat(chat): targeted slide patching (ACTION: PATCH) and lightweight BM25 retrieval for long sources`
 
 ---
 
@@ -18,18 +18,19 @@ Commit Log: `feat(layout): add minimal closing (thank-you) layout, opt-in only; 
 "ChatPPT V2": Streamlit web app that turns reports (`.pdf/.docx/.txt/.md`) or pasted text into consulting-grade `.pptx` decks, and also answers questions about the source/deck in the same chat. Python 3, Streamlit >=1.46, `google-genai`, Pydantic v2, `python-pptx`, `pypdf`, `python-docx`, `Pillow`, `urllib`. Files: `app.py`, `chatppt/` package, `smoke_test.py`, `requirements.txt`, `README.md`, `.gitignore`, `.streamlit/config.toml`. Run: `streamlit run app.py`.
 
 ## 2. File map
-Dependencies only point DOWN: `schemas/presets` -> `extraction/prompts/llm_client` -> `outline/images/chat_assistant` -> `pptx_template` -> `pptx_render` -> `pptx_build` -> `ui/*` -> `app.py`. Core modules never import UI code (may use `st.cache_data`).
+Dependencies only point DOWN: `schemas/presets` -> `extraction/retrieval/prompts/llm_client` -> `chat_assistant` -> `outline/images` -> `pptx_template` -> `pptx_render` -> `pptx_build` -> `ui/*` -> `app.py`. Core modules never import UI code (may use `st.cache_data`).
 
 | File | Holds |
 | :--- | :--- |
 | `app.py` | `main`: page config + flow (state, css, sidebar, messages, deck block, composer, `run_pending`) |
-| `chatppt/schemas.py` | `LayoutType` (cover, section_divider, bullet_cards, three_cards, two_column, kpi_metrics, chart_slide, image_split, **closing**), `ChartType`, `SlideSpec`, `PresentationOutline`, sub-models, `IMAGE_MODE_*` |
-| `chatppt/presets.py` | `LLM_PROVIDERS`, `BUILTIN_THEMES`, `TONE_OPTIONS`, `LANGUAGE_OPTIONS`, `CUSTOM_PROVIDER`, `REVISION_MAX_CHARS` |
+| `chatppt/schemas.py` | `LayoutType` (cover, section_divider, bullet_cards, three_cards, two_column, kpi_metrics, chart_slide, image_split, **closing**), `ChartType`, `SlideSpec`, `PresentationOutline`, `SlidePatch` (targeted-edit response), sub-models, `IMAGE_MODE_*` |
+| `chatppt/presets.py` | `LLM_PROVIDERS`, `BUILTIN_THEMES`, `TONE_OPTIONS`, `LANGUAGE_OPTIONS`, `CUSTOM_PROVIDER`, `REVISION_MAX_CHARS`, `PATCH_MAX_SLIDES` |
 | `chatppt/extraction.py` | `extract_text_from_uploaded_file`, `extract_images_from_report` |
+| `chatppt/retrieval.py` | `select_relevant_context` (BM25 excerpts of a long source within a char budget), `bm25_scores`, `split_into_chunks`, `tokenize` (words + CJK bigrams) |
 | `chatppt/prompts.py` | `SYSTEM_INSTRUCTION` (outline design + routing rules), `ASSISTANT_SYSTEM_INSTRUCTION` (Q&A/router) |
-| `chatppt/llm_client.py` | model discovery (`fetch_live_models`, `resolve_model_options`), JSON helpers (`extract_clean_json_str`, `repair_json_str`, `call_openai_compatible_json`), plain-text calls (`call_openai_compatible_text`, `call_gemini_text`, `strip_think_tags`) |
-| `chatppt/chat_assistant.py` | `route_message`, `build_assistant_prompt`, `build_deck_digest`, `parse_assistant_reply`, `AssistantDecision` |
-| `chatppt/outline.py` | `generate_smart_outline`, `_request_outline`, `_build_count_correction`, `_trim_slides_to_count`, `mentions_slide_count`, `parse_slide_count_change`, `sanitize_outline_dict` |
+| `chatppt/llm_client.py` | model discovery (`fetch_live_models`, `resolve_model_options`), JSON helpers (`extract_clean_json_str`, `repair_json_str`, `call_openai_compatible_json`; the last two take an optional schema, default `PresentationOutline`), plain-text calls (`call_openai_compatible_text`, `call_gemini_text`, `strip_think_tags`) |
+| `chatppt/chat_assistant.py` | `route_message`, `build_assistant_prompt`, `build_deck_digest`, `parse_assistant_reply`, `parse_patch_targets`, `AssistantDecision` (action answer/patch/revise + `slides`) |
+| `chatppt/outline.py` | `generate_smart_outline`, `patch_slides`, `_request_outline` (optional `response_model`), `_sanitize_slide`, `_build_count_correction`, `_trim_slides_to_count`, `mentions_slide_count`, `parse_slide_count_change`, `sanitize_outline_dict` |
 | `chatppt/images.py` | Unsplash fetch, AI fallback, `resolve_slide_image_bytes`, `add_picture_fitted`, `_derive_fallback_keywords` |
 | `chatppt/pptx_template.py` | custom `.pptx` inheritance (colors, fonts, backgrounds, decoration stripping, prototypes) |
 | `chatppt/pptx_render.py` | drawing helpers + 9 layout renderers (`render_closing_slide` etc.) |
@@ -40,12 +41,13 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/prompts/llm_clien
 | `chatppt/ui/sidebar.py`, `messages.py` | sidebar; hero + chat messages (renders Markdown + `meta` caption) |
 | `chatppt/ui/outline_editor.py` + `editor_text.py` | per-slide editor + text<->data helpers |
 | `chatppt/ui/export.py` | deck block: editor + render/download (user presses a separate render button) |
-| `chatppt/ui/generation.py` | `handle_send`, `_prepare_generation`, `run_pending` |
+| `chatppt/ui/generation.py` | `handle_send`, `_prepare_generation`, `_run_patch`, `run_pending` |
 | `chatppt/ui/composer.py` + `common.py` | bottom input bar (Attach, Template, Model, `⚙ N slides` popover, **Send ➤**) |
 
 **Task -> files to upload:**
 - Outline quality / prompt wording -> `prompts.py` (+ `outline.py`)
-- Q&A / question-vs-instruction routing -> `chat_assistant.py`, `prompts.py`, `ui/generation.py`
+- Q&A / question-vs-instruction routing / targeted patch -> `chat_assistant.py`, `prompts.py`, `ui/generation.py` (+ `outline.py`)
+- Long-source context selection -> `retrieval.py` (+ `chat_assistant.py`)
 - Slide count / validation -> `outline.py` (+ `schemas.py`, `ui/generation.py`)
 - Provider/model/JSON problems -> `llm_client.py` (+ `presets.py`)
 - Template looks wrong -> `pptx_template.py`; a layout's look -> `pptx_render.py`
@@ -56,7 +58,9 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/prompts/llm_clien
 **Rules:** (1) keep layering above; (2) session keys are created in `ui/state.py::init_state`, settings read via `st.session_state.settings[...]`; (3) list new cross-module functions in this table; (4) finish with `python smoke_test.py` and add a check for bugs that could regress.
 
 ## 3. Key behaviors (what the code does today)
-- **Send flow** (`handle_send` -> `run_pending`): text-only messages <= `REVISION_MAX_CHARS` are *routed*: `route_message` makes one plain-text LLM call (protocol first line `ACTION: ANSWER` + reply, or `ACTION: REVISE`; context = source (12k chars) + deck digest + last 6 messages). ANSWER -> assistant bubble (meta "💬 Answer · outline unchanged"), deck and slider untouched. REVISE -> outline generation. Attached file, long text, or a plain relative-count instruction without `?` skip routing. Router failure -> REVISE. Side effects (commit source for no-deck case, `opt_slides_sync`, user-message meta/✏️) happen in `_prepare_generation`, only after REVISE is known.
+- **Send flow** (`handle_send` -> `run_pending`): text-only messages <= `REVISION_MAX_CHARS` are *routed*: `route_message` makes one plain-text LLM call (protocol first line `ACTION: ANSWER` + reply, `ACTION: PATCH: <n,...>`, or `ACTION: REVISE`; context = source (<=12k chars, see Retrieval) + deck digest + last 6 messages). ANSWER -> assistant bubble (meta "💬 Answer · outline unchanged"), deck and slider untouched. PATCH -> `_run_patch`. REVISE -> outline generation. Attached file, long text, or a plain relative-count instruction without `?` skip routing. Router failure -> REVISE. Side effects (commit source for no-deck case, `opt_slides_sync`, user-message meta/✏️) happen in `_prepare_generation`, only after REVISE is known.
+- **Targeted patch** (`ACTION: PATCH`): the router names <= `PATCH_MAX_SLIDES` (5) existing slides; numbers outside the deck, none, or too many -> REVISE. Never used for add/remove/reorder/count/deck-wide changes, and ignored when a relative count edit is pending (`sync_slides`). `patch_slides` sends the whole-deck digest, only the target slides' visible fields (`_slide_for_prompt`), and BM25 source excerpts; expects `SlidePatch` with one slide per target (matched by `slide_number`, else by order), sanitizes each with `_sanitize_slide`, keeps the old `image_source_mode`, turns a non-last `closing` into `bullet_cards`. All other slide dicts are returned as the same objects (100% unchanged). `gen` += 1, `pptx_bytes` reset, message "Updated slide N" (meta "✏️ Targeted edit"). Any patch failure falls back to the full regeneration.
+- **Retrieval** (`retrieval.py`, no deps): sources > 12k chars are split into ~1000-char line chunks; BM25 (k1 1.5, b 0.75) over word tokens + CJK bigrams. Picks: chunk 0 (title/intro) + best hits + their neighbors, then fills leftover budget from the document head; output in document order with `[...]` gaps. No match -> head of document (old behavior). Index cached per source (`lru_cache`). Router query = new message + previous user message; patch query = instruction + target-slide digest. Full outline generation still gets the whole source.
 - **Slide count**: `generate_smart_outline(enforce_count=True)` = prompt rule + up to 2 corrective retries + deterministic trim. `mentions_slide_count` (absolute, "6 slides") disables enforcement. `parse_slide_count_change` (relative: "add one more slide", "add a thank you slide", "remove the last slide", "加一页", "删掉最后一页"; clamp 4-20) sets target = current deck size + delta and takes precedence; the revision prompt then lists the current slide titles and says keep all existing slides. `render_composer` applies `opt_slides_sync` to the slider before it is created.
 - **closing layout** (opt-in only): big centered phrase + accent bar + optional one-line presenter note; no cards/points/takeaway/contact details. The prompt forbids adding it unprompted (default decks end with a content slide). `sanitize_outline_dict` keeps one closing slide, moves it last, clears its takeaway; `_trim_slides_to_count` protects closing + the conclusion before it; closing is never auto-promoted to `image_split`; `pptx_build` uses role `cover` for it so custom templates give it the cover background.
 - **Sanitizer**: equalizes chart categories/values, fills missing structures, forces slide 1 = cover, guarantees >=1 `image_split` on 4+ slide decks, sets `image_source_mode`.
@@ -73,6 +77,9 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/prompts/llm_clien
 - Patching files: files use CRLF; preserve it.
 
 ## 5. Pending
+- [ ] User to verify targeted patch: "把第 3 页改成三栏卡片" / "shorten the data on slide 5" -> only that slide changes (message "Updated slide N"); "make all titles shorter" and "add one more slide" still regenerate.
+- [ ] User to verify retrieval: with a long PDF (> 12k chars) ask about a number from the second half -> correct answer.
+- [ ] Known edge: a cross-language question (Chinese question, English source) gets few BM25 hits and falls back to the head of the document (same as before).
 - [ ] User to verify: default deck has NO thank-you slide; "add a thank you slide" -> 9 slides, last is a big centered "Thank You" (also with a custom .pptx template).
 - [ ] User to verify Q&A: after a deck exists ask "why three cards on slide 4?" -> answer bubble, outline unchanged; "make the titles shorter" -> regenerates; first message "what can you do?" -> answer, no deck.
 - [ ] User to verify: 8 slides, then "add one more slide conclusion" -> 9 slides (old 8 kept) and slider shows 9; no `opt_slides` warning in the terminal.
@@ -88,3 +95,4 @@ Dependencies only point DOWN: `schemas/presets` -> `extraction/prompts/llm_clien
 | 2026-10-17 | Fix: "add one more slide" replaced slide 8 -> relative count parsing (`parse_slide_count_change`), keep-existing-slides prompt, slider sync (`opt_slides_sync`) |
 | 2026-10-17 | Feature: single **Send ➤** button with LLM routing between Q&A and deck revision (`chat_assistant.py`, plain-text calls in `llm_client.py`); fixed `None` slides crash and the `opt_slides` Streamlit warning |
 | 2026-10-17 | Feature: opt-in minimal `closing` layout (schemas, prompts, outline, pptx_render, pptx_build, outline_editor); parser also understands "add/remove thank you slide"; smoke test has 9 layouts + `check_closing_slide` + `check_assistant` |
+| 2026-10-17 | Feature: targeted slide patching (`ACTION: PATCH`, `patch_slides`, `SlidePatch`, `_sanitize_slide` extracted, schema-param JSON helpers) + lightweight BM25 chunk retrieval (`retrieval.py`) for router and patch context; smoke test adds `check_retrieval`, `check_patch`, patch-protocol asserts |

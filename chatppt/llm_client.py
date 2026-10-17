@@ -7,11 +7,12 @@ import json
 import re
 import urllib.error
 import urllib.request
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Type
 
 from google import genai
 from google.genai import types
 import streamlit as st
+from pydantic import BaseModel
 
 from chatppt.schemas import PresentationOutline
 
@@ -138,22 +139,22 @@ def extract_clean_json_str(raw_text: Optional[str]) -> str:
     return cleaned
 
 
-def _parses_as_outline(text: str) -> bool:
-    """Return True if the text is valid JSON that satisfies the PresentationOutline schema."""
+def _parses_as_outline(text: str, model: Type[BaseModel] = PresentationOutline) -> bool:
+    """Return True if the text is valid JSON that satisfies the given schema (PresentationOutline by default)."""
     try:
-        PresentationOutline.model_validate_json(text)
+        model.model_validate_json(text)
         return True
     except Exception:  # noqa: BLE001
         return False
 
 
-def repair_json_str(raw_text: str) -> str:
+def repair_json_str(raw_text: str, model: Type[BaseModel] = PresentationOutline) -> str:
     """
     Best-effort repair for slightly malformed LLM JSON (the most common failures are a stray
     closing brace/bracket or missing closers at the end). Returns the original text unchanged
     if no repair produces a schema-valid outline.
     """
-    if not raw_text or _parses_as_outline(raw_text):
+    if not raw_text or _parses_as_outline(raw_text, model):
         return raw_text
 
     # Scan once, ignoring characters inside string literals
@@ -181,13 +182,13 @@ def repair_json_str(raw_text: str) -> str:
 
     # Strategy 1: truncated output -> close any unterminated string/containers
     candidate = raw_text + ('"' if in_string else "") + "".join(reversed(stack))
-    if _parses_as_outline(candidate):
+    if _parses_as_outline(candidate, model):
         return candidate
 
     # Strategy 2: a single stray closing brace/bracket -> try removing each one
     for pos in closer_positions:
         candidate = raw_text[:pos] + raw_text[pos + 1:]
-        if _parses_as_outline(candidate):
+        if _parses_as_outline(candidate, model):
             return candidate
 
     return raw_text
@@ -199,6 +200,7 @@ def call_openai_compatible_json(
     model_name: str,
     system_prompt: str,
     user_prompt: str,
+    response_model: Type[BaseModel] = PresentationOutline,
 ) -> str:
     """
     Zero-dependency REST client for OpenAI-compatible chat completion endpoints
@@ -207,7 +209,7 @@ def call_openai_compatible_json(
     models (such as Groq's `openai/gpt-oss-120b` and `qwen/qwen3-32b`) so they never
     exhaust the default 1024-token ceiling on internal thinking and return `content: ""`.
     """
-    schema_json = json.dumps(PresentationOutline.model_json_schema(), ensure_ascii=False)
+    schema_json = json.dumps(response_model.model_json_schema(), ensure_ascii=False)
     full_system_prompt = (
         f"{system_prompt}\n\n"
         "### OUTPUT FORMAT REQUIREMENT:\n"

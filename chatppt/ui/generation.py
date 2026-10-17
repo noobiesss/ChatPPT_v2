@@ -7,7 +7,7 @@ import streamlit as st
 
 from chatppt.chat_assistant import route_message
 from chatppt.extraction import extract_images_from_report, extract_text_from_uploaded_file
-from chatppt.outline import generate_smart_outline, mentions_slide_count, parse_slide_count_change
+from chatppt.outline import generate_smart_outline, mentions_slide_count, parse_slide_count_change, patch_slides
 from chatppt.presets import CUSTOM_PROVIDER, REVISION_MAX_CHARS
 from chatppt.schemas import IMAGE_MODE_UNSPLASH_FIRST
 from chatppt.ui.common import _short
@@ -111,6 +111,7 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
         "user_text": text,
         "is_revision": is_revision,
         "meta_revise": meta_full,
+        "meta_model": meta_model,
         "commit_source": commit_source,
         "sync_slides": relative_target,
     }
@@ -131,6 +132,46 @@ def _prepare_generation(chat: dict, p: dict) -> None:
         last["meta"] = p["meta_revise"]
         if p.get("is_revision") and not last["content"].startswith("✏️"):
             last["content"] = f"✏️ {last['content']}"
+
+
+def _run_patch(chat: dict, p: dict, targets: list) -> bool:
+    """Rewrite only the target slides in place. Returns False on any failure so the caller regenerates instead."""
+    nums = ", ".join(str(n) for n in targets)
+    label = f"slide {nums}" if len(targets) == 1 else f"slides {nums}"
+    with st.spinner(f"Updating {label} with {p['provider']} · {p['model']}…"):
+        try:
+            slides = patch_slides(
+                provider=p["provider"],
+                api_key=p["api_key"],
+                model_name=p["model"],
+                custom_base_url=p["base_url"],
+                slides=chat["slides"],
+                targets=targets,
+                instruction=p["user_text"],
+                source_text=chat["source_text"],
+                tone=p["tone"],
+                language=p["language"],
+            )
+        except Exception:  # noqa: BLE001 - fall back to the full regeneration
+            return False
+    chat["slides"] = slides
+    chat["gen"] += 1  # new editor widget keys => the editor shows the patched slides
+    chat["pptx_bytes"] = None
+    if 1 in targets and slides[0].get("action_title"):
+        chat["title"] = slides[0]["action_title"][:40]
+    if chat["messages"] and chat["messages"][-1]["role"] == "user":
+        last = chat["messages"][-1]
+        last["meta"] = f"{label} · {p.get('meta_model', '')}"
+        if not last["content"].startswith("✏️"):
+            last["content"] = f"✏️ {last['content']}"
+    chat["messages"].append(
+        {
+            "role": "assistant",
+            "content": f"Updated **{label}**; all other slides are unchanged. Review it below, then render the .pptx.",
+            "meta": "✏️ Targeted edit",
+        }
+    )
+    return True
 
 
 def run_pending(chat: dict, container) -> None:
@@ -161,6 +202,11 @@ def run_pending(chat: dict, container) -> None:
                     )
                     chat["pending"] = None
                     st.rerun()
+                # A slide-count change ("add one more slide?") always needs the full regeneration
+                if decision.action == "patch" and chat["slides"] and p.get("sync_slides") is None:
+                    if _run_patch(chat, p, decision.slides):
+                        chat["pending"] = None
+                        st.rerun()
             _prepare_generation(chat, p)
             with st.spinner(f"Designing your deck with {p['provider']} · {p['model']}…"):
                 try:
