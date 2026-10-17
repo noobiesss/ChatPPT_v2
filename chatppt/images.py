@@ -16,7 +16,7 @@ from google.genai import types
 from PIL import Image
 from pptx.util import Inches
 
-from chatppt.schemas import IMAGE_MODE_PLACEHOLDER, IMAGE_MODE_UNSPLASH_FIRST
+from chatppt.schemas import IMAGE_MODE_PLACEHOLDER, IMAGE_MODE_REPORT_FIRST, IMAGE_MODE_UNSPLASH_FIRST, LayoutType
 
 
 def _derive_fallback_keywords(text: str) -> str:
@@ -147,6 +147,38 @@ def generate_ai_image_bytes(
         return None
 
 
+def assign_report_images(
+    slides: List[dict],
+    n_images: int,
+    default_image_mode: str = IMAGE_MODE_UNSPLASH_FIRST,
+) -> Dict[int, int]:
+    """
+    Map deck position -> report image index for every image_split slide in IMAGE_MODE_REPORT_FIRST.
+    A slide's explicit `report_image_index` (picked in the editor) wins; the other slides receive the
+    remaining figures in document order. Slides left without a figure are absent from the map
+    (they fall back to Unsplash / AI when rendered). Pure function, also used by the editor preview.
+    """
+    targets = [
+        i for i, s in enumerate(slides or [])
+        if s.get("layout_type") == LayoutType.IMAGE_SPLIT.value
+        and (s.get("image_source_mode") or default_image_mode) == IMAGE_MODE_REPORT_FIRST
+    ]
+    assigned: Dict[int, int] = {}
+    for i in targets:
+        idx = slides[i].get("report_image_index")
+        if isinstance(idx, int) and 0 <= idx < n_images:
+            assigned[i] = idx
+    used = set(assigned.values())
+    free = iter([k for k in range(n_images) if k not in used])
+    for i in targets:
+        if i not in assigned:
+            nxt = next(free, None)
+            if nxt is None:
+                break
+            assigned[i] = nxt
+    return assigned
+
+
 def resolve_slide_image_bytes(
     slide_data: dict,
     gemini_api_key: Optional[str],
@@ -156,14 +188,21 @@ def resolve_slide_image_bytes(
     default_image_mode: str = IMAGE_MODE_UNSPLASH_FIRST,
 ) -> Optional[bytes]:
     """
-    Two-Option Image Resolver:
+    Three-Option Image Resolver:
     1. IMAGE_MODE_UNSPLASH_FIRST (default): Query Unsplash stock photos first; if no key or no match,
        automatically fall back to AI image generation.
     2. IMAGE_MODE_PLACEHOLDER: Return None so the slide renders a clean reserved photo placeholder box.
+    3. IMAGE_MODE_REPORT_FIRST: use the report figure in `report_image_index` (set by assign_report_images);
+       without one, continue exactly like Option 1.
     """
     src_mode = slide_data.get("image_source_mode") or default_image_mode
     if src_mode == IMAGE_MODE_PLACEHOLDER:
         return None
+    if src_mode == IMAGE_MODE_REPORT_FIRST:
+        idx = slide_data.get("report_image_index")
+        images = extracted_report_images or []
+        if isinstance(idx, int) and 0 <= idx < len(images) and images[idx].get("bytes"):
+            return images[idx]["bytes"]
 
     image_spec = slide_data.get("image") or {}
     action_title = slide_data.get("action_title", "Corporate illustration")

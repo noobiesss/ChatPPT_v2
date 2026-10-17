@@ -37,11 +37,19 @@ Transform the user's source report into a visually diverse, executive-ready slid
    - `kpi_metrics`: Use when highlighting 2 to 4 headline numbers/statistics from the text (`kpis`).
    - `chart_slide`: Use when the source text contains a series of comparable numbers (trends, benchmarks, or shares).
      Populate `chart` AND `points` (2 to 3 key insights explaining the chart).
+   - `timeline_flow`: Use for roadmaps, phased plans, milestones, project schedules, or step-by-step business processes.
+     Populate `timeline_steps` with 3 to 5 steps in order; each has a very short `stage_label` ("Phase 1", "Q3 2026",
+     "Step 2"), a 2-5 word `title` and an 8-18 word `description`.
+   - `comparison_table`: Use for structured comparisons of 3+ options, scenarios, vendors or segments across several
+     criteria (a grid is clearer than prose). Populate `table_headers` (2 to 5 columns; the first column names the
+     criterion) and `table_rows` (2 to 6 rows, each with EXACTLY as many short cells as headers, max ~8 words per cell).
+     Use `two_column` instead for a simple two-sided comparison (pros vs. cons, before vs. after).
    - `bullet_cards`: Use for sequential explanations or general structured takeaways (3 to 4 `points`).
 
 3. DATA INTEGRITY (NO HALLUCINATED NUMBERS):
    - ONLY choose `chart_slide` or `kpi_metrics` if real numerical figures exist in the source text.
    - In `ChartSpec`, the length of `categories` and `values` MUST be identical.
+   - Table cells and timeline stage labels may only contain numbers, dates and figures that appear in the source.
 
 4. SCANNABLE COPYWRITING & TAKEAWAY BANNER:
    - Break every point into a short bold `heading` (3-6 words) and a concise `detail` (12-25 words).

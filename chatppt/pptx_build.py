@@ -9,8 +9,8 @@ from typing import List, Dict, Optional
 from pptx import Presentation
 from pptx.util import Inches
 
-from chatppt.images import resolve_slide_image_bytes
-from chatppt.pptx_render import apply_slide_fonts, clear_existing_slides, draw_header_and_takeaway, render_bullet_cards_slide, render_chart_slide, render_closing_slide, render_cover_slide, render_image_split_slide, render_kpi_metrics_slide, render_section_divider_slide, render_three_cards_slide, render_two_column_slide
+from chatppt.images import assign_report_images, resolve_slide_image_bytes
+from chatppt.pptx_render import apply_slide_fonts, clear_existing_slides, draw_header_and_takeaway, render_bullet_cards_slide, render_chart_slide, render_closing_slide, render_comparison_table_slide, render_cover_slide, render_image_split_slide, render_kpi_metrics_slide, render_section_divider_slide, render_three_cards_slide, render_timeline_flow_slide, render_two_column_slide
 from chatppt.pptx_template import _capture_template_prototypes, _create_slide_with_template, _scale_template_to_widescreen, _strip_template_decorations, extract_template_style
 from chatppt.presets import BUILTIN_THEMES
 from chatppt.schemas import IMAGE_MODE_UNSPLASH_FIRST, LayoutType
@@ -28,7 +28,7 @@ def build_presentation_pptx(
     default_image_mode: str = IMAGE_MODE_UNSPLASH_FIRST,
 ) -> bytes:
     """
-    Assemble the complete .pptx presentation across all 9 visual layouts.
+    Assemble the complete .pptx presentation across all 11 visual layouts.
     Supports both Built-in Color Themes and Custom Uploaded .pptx Templates (inheriting
     Slide Masters, role-specific layouts, slide backgrounds, theme colors, and fonts).
     Sample-slide decorations (illustrations, frames, widgets, logos) are intentionally NOT inherited.
@@ -56,6 +56,9 @@ def build_presentation_pptx(
         apply_solid_bg = True
 
     total_slides = len(slides_data)
+    report_images = extracted_report_images or []
+    # Report figures for image_split slides in "Report Images First" mode (explicit picks + auto-fill)
+    report_assignment = assign_report_images(slides_data, len(report_images), default_image_mode)
 
     for idx, slide_data in enumerate(slides_data):
         layout = slide_data.get("layout_type", LayoutType.BULLET_CARDS.value)
@@ -92,13 +95,19 @@ def build_presentation_pptx(
             elif layout == LayoutType.CHART_SLIDE.value:
                 render_chart_slide(slide, slide_data, theme)
 
+            elif layout == LayoutType.TIMELINE_FLOW.value:
+                render_timeline_flow_slide(slide, slide_data, theme)
+
+            elif layout == LayoutType.COMPARISON_TABLE.value:
+                render_comparison_table_slide(slide, slide_data, theme)
+
             elif layout == LayoutType.IMAGE_SPLIT.value:
                 img_bytes = resolve_slide_image_bytes(
-                    slide_data=slide_data,
+                    slide_data={**slide_data, "report_image_index": report_assignment.get(idx)},
                     gemini_api_key=gemini_api_key,
                     use_imagen=use_imagen,
                     unsplash_access_key=unsplash_access_key,
-                    extracted_report_images=extracted_report_images,
+                    extracted_report_images=report_images,
                     default_image_mode=default_image_mode,
                 )
                 render_image_split_slide(slide, slide_data, theme, img_bytes=img_bytes)

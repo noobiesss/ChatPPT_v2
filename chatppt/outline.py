@@ -20,6 +20,53 @@ from chatppt.retrieval import select_relevant_context
 from chatppt.schemas import ChartType, IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST, ImagePlacement, LayoutType, PresentationOutline, SlideSpec, SlidePatch, VisualStyle
 
 
+# Readability limits shared by the sanitizer, the renderer and the editor
+TIMELINE_MAX_STEPS = 5
+TABLE_MAX_COLS, TABLE_MAX_ROWS = 5, 6
+
+
+def normalize_timeline_steps(steps: Optional[List[dict]]) -> List[dict]:
+    """Drop empty steps, fill missing keys, keep at most TIMELINE_MAX_STEPS."""
+    out = []
+    for step in steps or []:
+        step = step or {}
+        title = str(step.get("title") or "").strip()
+        desc = str(step.get("description") or "").strip()
+        if not title and not desc:
+            continue
+        label = str(step.get("stage_label") or "").strip() or f"Step {len(out) + 1}"
+        out.append({"stage_label": label, "title": title or desc[:40], "description": desc})
+    return out[:TIMELINE_MAX_STEPS]
+
+
+def _steps_from_points(points: List[dict]) -> List[dict]:
+    return normalize_timeline_steps(
+        [{"stage_label": f"Step {i + 1}", "title": p.get("heading"), "description": p.get("detail")}
+         for i, p in enumerate(points or [])]
+    )
+
+
+def normalize_table(headers: Optional[List[str]], rows: Optional[List[List[str]]]) -> Tuple[List[str], List[List[str]]]:
+    """
+    Make the table rectangular: strip cells, drop empty rows, pad/cut every row to the header count,
+    cap columns and rows. Returns ([], []) when fewer than 2 columns or no data row remain.
+    """
+    headers = [str(h or "").strip() for h in (headers or [])][:TABLE_MAX_COLS]
+    while headers and not headers[-1]:
+        headers.pop()
+    if len(headers) < 2:
+        return [], []
+    width = len(headers)
+    clean_rows = []
+    for row in rows or []:
+        cells = [str(c if c is not None else "").strip() for c in (row or [])][:width]
+        if not any(cells):
+            continue
+        clean_rows.append(cells + [""] * (width - len(cells)))
+    clean_rows = clean_rows[:TABLE_MAX_ROWS]
+    return (headers, clean_rows) if clean_rows else ([], [])
+
+
 def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict:
     """Repair one slide (0-based deck position `idx`) and fill every sub-structure the editor and renderer expect."""
     s_dict = slide.model_dump()
@@ -77,6 +124,24 @@ def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict
         else:
             chart["categories"] = chart["categories"][:min_len]
             chart["values"] = chart["values"][:min_len]
+
+    # Validate timeline steps; a model that wrote `points` instead of steps still gets a timeline
+    steps = normalize_timeline_steps(s_dict.get("timeline_steps"))
+    if len(steps) < 2 and layout == LayoutType.TIMELINE_FLOW.value:
+        if len(slide.points or []) >= 2:
+            steps = _steps_from_points(s_dict["points"])
+        else:
+            layout = LayoutType.BULLET_CARDS.value
+    s_dict["timeline_steps"] = steps or _steps_from_points(s_dict["points"])
+
+    # Validate table: rectangular grid with 2-5 columns and at least 1 row, else fall back to cards
+    headers, rows = normalize_table(s_dict.get("table_headers"), s_dict.get("table_rows"))
+    if not rows and layout == LayoutType.COMPARISON_TABLE.value:
+        layout = LayoutType.BULLET_CARDS.value
+    if not rows:
+        headers = ["Topic", "Detail"]
+        rows = [[p["heading"], p["detail"]] for p in s_dict["points"][:TABLE_MAX_ROWS]]
+    s_dict["table_headers"], s_dict["table_rows"] = headers, rows
 
     # Validate or initialize image spec
     fallback_kw = _derive_fallback_keywords(s_dict.get("action_title", ""))
@@ -415,6 +480,8 @@ _LAYOUT_FIELDS = {
     LayoutType.KPI_METRICS.value: ("kpis",),
     LayoutType.CHART_SLIDE.value: ("points", "chart"),
     LayoutType.IMAGE_SPLIT.value: ("points", "image"),
+    LayoutType.TIMELINE_FLOW.value: ("timeline_steps",),
+    LayoutType.COMPARISON_TABLE.value: ("table_headers", "table_rows"),
 }
 
 
@@ -496,4 +563,6 @@ def patch_slides(
         # Keep the image option the user picked for this slide in the editor
         mode = old.get("image_source_mode") if old.get("image_source_mode") in IMAGE_MODE_OPTIONS else IMAGE_MODE_UNSPLASH_FIRST
         patched[n - 1] = _sanitize_slide(spec, n - 1, mode)
+        if old.get("report_image_index") is not None:
+            patched[n - 1]["report_image_index"] = old["report_image_index"]
     return patched

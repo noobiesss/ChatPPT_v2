@@ -104,7 +104,7 @@ def settings_dialog() -> None:
     cap_col.caption(status)
     refresh_col.button("🔄 Refresh list", key="set_refresh", on_click=_refresh_model_list, use_container_width=True)
 
-    # --- 2. Images (two choices, defaulting to Option 1) ---
+    # --- 2. Images (three choices, defaulting to Option 1) ---
     st.divider()
     st.markdown("##### 2 · Images")
     cur_img_mode = s.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST)
@@ -114,7 +114,9 @@ def settings_dialog() -> None:
         "Slide image mode",
         IMAGE_MODE_OPTIONS,
         index=IMAGE_MODE_OPTIONS.index(cur_img_mode),
-        help="Defaults to Option 1: search Unsplash first, and fall back to AI generation if no photo is found.",
+        help="Defaults to Option 1: search Unsplash first, and fall back to AI generation if no photo is found. "
+        "Option 3 places figures extracted from the uploaded PDF/DOCX on image slides (pick one per slide in the "
+        "outline editor); slides without a figure fall back to Option 1.",
         key="set_image_mode",
     )
     unsplash_key = st.text_input(

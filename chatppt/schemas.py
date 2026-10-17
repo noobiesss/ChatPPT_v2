@@ -20,6 +20,8 @@ class LayoutType(str, Enum):
     CHART_SLIDE = "chart_slide"
     IMAGE_SPLIT = "image_split"
     CLOSING = "closing"
+    TIMELINE_FLOW = "timeline_flow"
+    COMPARISON_TABLE = "comparison_table"
 
 
 class ChartType(str, Enum):
@@ -45,7 +47,11 @@ IMAGE_MODE_UNSPLASH_FIRST = "Unsplash Photo First (Fallback to AI)"
 IMAGE_MODE_PLACEHOLDER = "Reserve Photo Placeholder"
 
 
-IMAGE_MODE_OPTIONS = [IMAGE_MODE_UNSPLASH_FIRST, IMAGE_MODE_PLACEHOLDER]
+# Figures extracted from the uploaded .pdf/.docx; slides without a usable figure fall back to Option 1
+IMAGE_MODE_REPORT_FIRST = "Report Images First (Fallback to Unsplash / AI)"
+
+
+IMAGE_MODE_OPTIONS = [IMAGE_MODE_UNSPLASH_FIRST, IMAGE_MODE_PLACEHOLDER, IMAGE_MODE_REPORT_FIRST]
 
 
 class StructuredPoint(BaseModel):
@@ -76,6 +82,14 @@ class KPIMetric(BaseModel):
     context: str = Field(
         description="Brief 5 to 12 word context explaining the metric."
     )
+
+
+class TimelineStep(BaseModel):
+    stage_label: str = Field(
+        description="Very short stage marker (max 14 chars), e.g. 'Phase 1', 'Q3 2026', 'Week 1-2', 'Step 2'."
+    )
+    title: str = Field(description="Step title (2 to 5 words), e.g. 'Pilot Rollout'.")
+    description: str = Field(description="What happens in this step (8 to 18 words).")
 
 
 class ChartSpec(BaseModel):
@@ -154,6 +168,20 @@ class SlideSpec(BaseModel):
     image: Optional[ImageSpec] = Field(
         default=None,
         description="Populate ONLY when layout_type is 'image_split'."
+    )
+    timeline_steps: Optional[List[TimelineStep]] = Field(
+        default=None,
+        description="Populate ONLY when layout_type is 'timeline_flow': 3 to 5 steps in chronological / process order."
+    )
+    table_headers: Optional[List[str]] = Field(
+        default=None,
+        description="Populate ONLY when layout_type is 'comparison_table': 2 to 5 column headers; "
+                    "the first column names the comparison criterion (e.g. 'Criterion', 'Option A', 'Option B')."
+    )
+    table_rows: Optional[List[List[str]]] = Field(
+        default=None,
+        description="Populate ONLY when layout_type is 'comparison_table': 2 to 6 rows, each with EXACTLY as many "
+                    "short cells (max ~8 words) as table_headers."
     )
     bottom_takeaway: Optional[str] = Field(
         default=None,

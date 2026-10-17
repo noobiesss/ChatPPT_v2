@@ -64,7 +64,14 @@ def build_deck_digest(slides: List[dict]) -> str:
                 lines.append(f"   {col.get('column_title', side)}: {items}")
         elif layout == "kpi_metrics":
             lines.append("   KPIs: " + "; ".join(f"{k.get('value')} {k.get('label')}" for k in s.get("kpis", [])))
-        elif layout not in ("cover", "section_divider"):
+        elif layout == "timeline_flow":
+            for st in s.get("timeline_steps") or []:
+                lines.append(f"   > {st.get('stage_label')}: {st.get('title')}: {st.get('description')}")
+        elif layout == "comparison_table":
+            lines.append("   table: " + " | ".join(s.get("table_headers") or []))
+            for row in s.get("table_rows") or []:
+                lines.append("   row: " + " | ".join(row))
+        elif layout not in ("cover", "section_divider", "closing"):
             for pt in s.get("points", []):
                 lines.append(f"   - {pt.get('heading')}: {pt.get('detail')}")
         if layout == "chart_slide" and s.get("chart"):

@@ -1,6 +1,6 @@
 # 📊 ChatPPT V2 — Smart Visual Presentation Generator
 
-**ChatPPT V2** is an AI-powered presentation engineering web app built with **Python**, **Streamlit**, **Pydantic v2**, and **`python-pptx`**. Instead of generating monotonous bullet-point slides, ChatPPT acts as a consulting-style presentation architect—featuring a **Claude-style conversational UI**, **multi-provider LLM support** with **live model discovery**, **8 distinct visual slide layouts**, **native editable PowerPoint charts**, **Smart Hybrid image routing**, and **deep `.pptx` custom template inheritance**.
+**ChatPPT V2** is an AI-powered presentation engineering web app built with **Python**, **Streamlit**, **Pydantic v2**, and **`python-pptx`**. Instead of generating monotonous bullet-point slides, ChatPPT acts as a consulting-style presentation architect—featuring a **Claude-style conversational UI**, **multi-provider LLM support** with **live model discovery**, **11 distinct visual slide layouts**, **native editable PowerPoint charts**, **Smart Hybrid image routing**, and **deep `.pptx` custom template inheritance**.
 
 ---
 
@@ -17,8 +17,8 @@
   * **In-Memory Session Privacy:** All API keys live strictly in the Settings dialog (`⚙️ Settings`) inside per-session server memory and are never written to disk.
 * **Multi-Source Document & Embedded Figure Ingestion:**
   * Upload `.pdf`, `.docx`, `.txt`, or `.md` reports, or paste raw notes directly.
-  * Automatically extracts embedded diagrams, charts, and images from `.pdf` and `.docx` files so you can assign them to any slide.
-* **Consulting-Grade Copywriting & 8 Visual Layouts:**
+  * Automatically extracts embedded diagrams, charts, and images from `.pdf` and `.docx` files (logos, icons and duplicates are skipped). With the **Report Images First** image mode they fill `image_split` slides in document order, or you pick a figure per slide in the outline editor.
+* **Consulting-Grade Copywriting & 11 Visual Layouts:**
   * Enforces conclusion-first **Action Titles**, scannable **Bold Heading + Concise Detail** anchor cards, and a **Bottom Takeaway ("So What?") Banner** on content slides.
 * **Native Editable PowerPoint Charts:**
   * Extracts real numerical series from your report and renders native, editable PowerPoint Column, Line, and Pie charts (`XL_CHART_TYPE`).
@@ -43,6 +43,9 @@
 | **`kpi_metrics`** | 2–4 big-number hero cards (`46pt` bold metric + context) | Financial highlights, latency drops, ROI, benchmarks |
 | **`chart_slide`** | Native editable PPTX chart (left) + insight cards (right) | Time-series trends, category comparisons, market share |
 | **`image_split`** | Framed image + caption on one side, key points on the other | Product visuals, system diagrams, workflows, case studies |
+| **`timeline_flow`** | 3–5 numbered nodes on a connector line, stage label above and a step card below each | Roadmaps, phased plans, milestones, business processes |
+| **`comparison_table`** | Native editable PowerPoint table: accent header row, zebra rows, bold criterion column | Options / vendors / scenarios compared across several criteria |
+| **`closing`** | Large centered phrase + accent bar + optional presenter line (opt-in only) | Thank-you / Q&A slide when explicitly requested |
 
 ---
 

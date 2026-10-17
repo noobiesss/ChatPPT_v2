@@ -5,8 +5,44 @@ Edit when: changing what can be edited on each slide before rendering.
 
 import streamlit as st
 
-from chatppt.schemas import ChartType, IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST, LayoutType, VisualStyle
-from chatppt.ui.editor_text import format_kpis_for_editor, format_points_for_editor, parse_kpis_from_editor, parse_points_from_editor
+from chatppt.images import assign_report_images
+from chatppt.outline import normalize_table, normalize_timeline_steps
+from chatppt.schemas import ChartType, IMAGE_MODE_OPTIONS, IMAGE_MODE_REPORT_FIRST, IMAGE_MODE_UNSPLASH_FIRST, LayoutType, VisualStyle
+from chatppt.ui.editor_text import (
+    format_kpis_for_editor,
+    format_points_for_editor,
+    format_steps_for_editor,
+    format_table_for_editor,
+    parse_kpis_from_editor,
+    parse_points_from_editor,
+    parse_steps_from_editor,
+    parse_table_from_editor,
+)
+
+
+def _render_report_image_picker(chat: dict, slide: dict, idx: int, kp: str, default_img_mode: str) -> None:
+    """Dropdown to pin a figure from the uploaded report to this slide, with a thumbnail of what will be used."""
+    images = chat.get("report_images") or []
+    if not images:
+        slide["report_image_index"] = None
+        st.caption("No usable figures in the uploaded report (logos and icons are skipped), so this slide uses Unsplash / AI.")
+        return
+    options = [None] + list(range(len(images)))
+    cur = slide.get("report_image_index")
+    pick = st.selectbox(
+        "Report figure",
+        options=options,
+        index=options.index(cur) if cur in options else 0,
+        format_func=lambda k: "Auto (next unused figure)" if k is None
+        else f"#{k + 1} · {images[k]['name']} ({images[k].get('width', '?')}×{images[k].get('height', '?')})",
+        key=f"{kp}rptimg_{idx}",
+    )
+    slide["report_image_index"] = pick
+    shown = assign_report_images(chat["slides"], len(images), default_img_mode).get(idx)
+    if shown is None:
+        st.caption("Every figure is already used by other slides, so this slide falls back to Unsplash / AI.")
+    else:
+        st.image(images[shown]["bytes"], width=240, caption=f"Figure #{shown + 1} · {images[shown]['name']}")
 
 
 def render_outline_editor(chat: dict) -> None:
@@ -90,6 +126,29 @@ def render_outline_editor(chat: dict) -> None:
                 slide["left_column"] = {"column_title": l_title, "items": parse_points_from_editor(l_pts)}
                 slide["right_column"] = {"column_title": r_title, "items": parse_points_from_editor(r_pts)}
 
+            elif new_layout == LayoutType.TIMELINE_FLOW.value:
+                raw_steps = st.text_area(
+                    "Timeline Steps — 2 to 5 lines formatted as `Stage | Title | Description` "
+                    "(e.g. `Q1 2026 | Pilot Rollout | Launch in two plants and measure downtime`)",
+                    value=format_steps_for_editor(slide.get("timeline_steps", [])),
+                    height=140,
+                    key=f"{kp}steps_{idx}",
+                )
+                slide["timeline_steps"] = normalize_timeline_steps(parse_steps_from_editor(raw_steps))
+
+            elif new_layout == LayoutType.COMPARISON_TABLE.value:
+                raw_table = st.text_area(
+                    "Comparison Table — first line = column headers, then one row per line; separate cells with `|` "
+                    "(2-5 columns, up to 6 rows)",
+                    value=format_table_for_editor(slide.get("table_headers", []), slide.get("table_rows", [])),
+                    height=160,
+                    key=f"{kp}table_{idx}",
+                )
+                headers, rows = normalize_table(*parse_table_from_editor(raw_table))
+                if not rows:
+                    st.caption("⚠️ Needs a header line with 2+ columns and at least one row; renders as cards until then.")
+                slide["table_headers"], slide["table_rows"] = headers, rows
+
             elif new_layout == LayoutType.KPI_METRICS.value:
                 raw_kpis = st.text_area(
                     "Hero KPI Metrics — One per line formatted as `Value | Label | Context` (e.g. `+62% | Latency Drop | Across Q3 peak loads`)",
@@ -165,9 +224,12 @@ def render_outline_editor(chat: dict) -> None:
                         options=IMAGE_MODE_OPTIONS,
                         index=IMAGE_MODE_OPTIONS.index(cur_src),
                         key=f"{kp}imgsrc_{idx}",
-                        help="Option 1 searches Unsplash first and falls back to AI if unavailable. Option 2 reserves a photo placeholder box.",
+                        help="Option 1 searches Unsplash first and falls back to AI if unavailable. Option 2 reserves a "
+                        "photo placeholder box. Option 3 uses a figure from the uploaded report (Unsplash / AI if none is left).",
                     )
                     slide["image_source_mode"] = chosen_src
+                    if chosen_src == IMAGE_MODE_REPORT_FIRST:
+                        _render_report_image_picker(chat, slide, idx, kp, default_img_mode)
 
                     place_opts = ["left", "right"]
                     cur_place = img_obj.get("placement", "left")

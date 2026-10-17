@@ -1,7 +1,7 @@
 """Offline smoke test for ChatPPT V2 (no API keys, no network).
 
 Run from the project root after ANY code change:   python smoke_test.py
-It checks that (1) every module imports, (2) a deck with all 8 layouts builds and re-opens,
+It checks that (1) every module imports, (2) a deck with all 11 layouts builds and re-opens,
 (3) custom .pptx template inheritance still strips border frames and keeps template fonts,
 (4) a few pure helpers still behave. Exit code 0 = all good.
 """
@@ -45,7 +45,14 @@ def sample_slides() -> list:
         {"slide_number": 8, "layout_type": "image_split", "action_title": "Image split title", "points": pts[:2],
          "image": {"preferred_style": "stock_photo", "visual_prompt": "x", "search_keywords": "office", "caption": "Caption", "placement": "left"},
          "image_source_mode": "Reserve Photo Placeholder", "bottom_takeaway": "So what."},
-        {"slide_number": 9, "layout_type": "closing", "action_title": "Thank You", "subtitle_or_context": "Presented by Test"},
+        {"slide_number": 9, "layout_type": "timeline_flow", "action_title": "Timeline title",
+         "timeline_steps": [{"stage_label": f"Q{i}", "title": f"Step {i}", "description": "What happens."} for i in range(1, 5)],
+         "bottom_takeaway": "So what."},
+        {"slide_number": 10, "layout_type": "comparison_table", "action_title": "Table title",
+         "table_headers": ["Criterion", "Option A", "Option B"],
+         "table_rows": [["Cost", "Low", "High"], ["Speed", "Fast", "Slow"], ["Risk", "Medium", "Low"]],
+         "bottom_takeaway": "So what."},
+        {"slide_number": 11, "layout_type": "closing", "action_title": "Thank You", "subtitle_or_context": "Presented by Test"},
     ]
 
 
@@ -56,8 +63,17 @@ def check_builtin_decks() -> None:
     slides = sample_slides()
     for theme in list(BUILTIN_THEMES)[:2]:
         data = build_presentation_pptx(slides, theme, None, False, "", [])
-        assert len(Presentation(io.BytesIO(data)).slides) == len(slides), theme
-    print(f"[ok] built-in decks: {len(slides)} slides, all 9 layouts")
+        out = Presentation(io.BytesIO(data))
+        assert len(out.slides) == len(slides), theme
+    # comparison_table renders a NATIVE table with the header row and every cell
+    table_slide = out.slides[9]
+    tables = [sh.table for sh in table_slide.shapes if sh.has_table]
+    assert tables and len(tables[0].rows) == 4 and len(tables[0].columns) == 3
+    assert tables[0].cell(0, 1).text == "Option A" and tables[0].cell(3, 2).text == "Low"
+    # timeline_flow renders every stage label
+    texts = {sh.text_frame.text for sh in out.slides[8].shapes if sh.has_text_frame}
+    assert {"Q1", "Q4", "1", "4", "Step 1\nWhat happens."} <= texts, texts
+    print(f"[ok] built-in decks: {len(slides)} slides, all 11 layouts (native table, timeline nodes)")
 
 
 def _make_template() -> bytes:
@@ -147,6 +163,64 @@ def check_closing_slide() -> None:
     print("[ok] closing slide: placement, no takeaway, trim-safe")
 
 
+def check_new_layouts() -> None:
+    from chatppt.outline import normalize_table, sanitize_outline_dict
+    from chatppt.schemas import PresentationOutline, SlideSpec
+    from chatppt.ui.editor_text import format_steps_for_editor, format_table_for_editor, parse_steps_from_editor, parse_table_from_editor
+
+    # Ragged rows are padded / cut to the header count; a 1-column table is rejected
+    headers, rows = normalize_table(["A", "B", "C"], [["1"], ["1", "2", "3", "4"], ["", ""]])
+    assert headers == ["A", "B", "C"] and rows == [["1", "", ""], ["1", "2", "3"]]
+    assert normalize_table(["Only"], [["x"]]) == ([], [])
+    pts = [{"heading": "H1", "detail": "D1"}, {"heading": "H2", "detail": "D2"}, {"heading": "H3", "detail": "D3"}]
+    slides = [
+        SlideSpec(slide_number=1, layout_type="cover", action_title="c"),
+        SlideSpec(slide_number=2, layout_type="comparison_table", action_title="bad table", points=pts),
+        SlideSpec(slide_number=3, layout_type="timeline_flow", action_title="steps from points", points=pts),
+        SlideSpec(slide_number=4, layout_type="timeline_flow", action_title="empty timeline"),
+    ]
+    out = sanitize_outline_dict(PresentationOutline(deck_title="d", slides=slides))
+    assert out[1]["layout_type"] != "comparison_table"  # no table data -> falls back to cards
+    assert out[2]["layout_type"] == "timeline_flow" and [s["title"] for s in out[2]["timeline_steps"]] == ["H1", "H2", "H3"]
+    assert out[3]["layout_type"] != "timeline_flow"
+    steps = [{"stage_label": "Q1", "title": "Pilot", "description": "Run it"}]
+    assert parse_steps_from_editor(format_steps_for_editor(steps)) == steps
+    assert parse_table_from_editor(format_table_for_editor(["A", "B"], [["x", "y"]])) == (["A", "B"], [["x", "y"]])
+    print("[ok] timeline / table: sanitizer fallbacks, rectangular tables, editor round-trip")
+
+
+def check_report_images() -> None:
+    from PIL import Image
+
+    from chatppt.extraction import prepare_report_image
+    from chatppt.images import assign_report_images, resolve_slide_image_bytes
+    from chatppt.schemas import IMAGE_MODE_PLACEHOLDER, IMAGE_MODE_REPORT_FIRST
+
+    def png(w, h, mode="RGB"):
+        buf = io.BytesIO()
+        Image.new(mode, (w, h), "white").save(buf, format="PNG")
+        return buf.getvalue()
+
+    assert prepare_report_image(png(64, 64)) is None  # logo / icon size is skipped
+    assert prepare_report_image(b"not an image") is None
+    big = prepare_report_image(png(3000, 1500))
+    assert big and max(big["width"], big["height"]) <= 2400  # huge scans are downscaled
+    assert prepare_report_image(png(400, 300, "RGBA"))["bytes"][1:4] == b"PNG"  # alpha kept as PNG
+
+    rep, img, txt = IMAGE_MODE_REPORT_FIRST, "image_split", "bullet_cards"
+    deck = [{"layout_type": txt}, {"layout_type": img, "image_source_mode": rep},
+            {"layout_type": img, "image_source_mode": rep, "report_image_index": 0},
+            {"layout_type": img, "image_source_mode": IMAGE_MODE_PLACEHOLDER},
+            {"layout_type": img, "image_source_mode": rep}]
+    # Explicit pick wins, the others get the remaining figures in order; placeholder slides are skipped
+    assert assign_report_images(deck, 3, rep) == {2: 0, 1: 1, 4: 2}
+    assert assign_report_images(deck, 1, rep) == {2: 0}  # out of figures -> others fall back
+    images = [{"name": "a", "bytes": b"A"}, {"name": "b", "bytes": b"B"}]
+    slide = {"layout_type": img, "image_source_mode": rep, "report_image_index": 1}
+    assert resolve_slide_image_bytes(slide, None, False, "", images) == b"B"
+    print("[ok] report images: size filter, downscale, assignment, resolver")
+
+
 def check_assistant() -> None:
     from chatppt.chat_assistant import build_assistant_prompt, parse_assistant_reply
 
@@ -218,7 +292,7 @@ def check_patch() -> None:
 
 if __name__ == "__main__":
     for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide,
-               check_assistant, check_retrieval, check_patch):
+               check_new_layouts, check_report_images, check_assistant, check_retrieval, check_patch):
         fn()
     print("ALL SMOKE TESTS PASSED")
     sys.exit(0)

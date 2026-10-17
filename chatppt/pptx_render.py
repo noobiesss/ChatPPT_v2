@@ -1,4 +1,5 @@
-"""Slide drawing helpers and the 9 layout renderers (cover, divider, closing, cards, columns, KPI, chart, image split).
+"""Slide drawing helpers and the 11 layout renderers (cover, divider, closing, cards, columns, KPI, chart, image split,
+timeline, comparison table).
 
 Edit when: changing how a given slide layout looks. Does not touch template inheritance or the UI.
 """
@@ -564,3 +565,157 @@ def render_image_split_slide(
         p_det.text = pt.get("detail", "")
         p_det.font.size = Pt(13.5)
         p_det.font.color.rgb = theme["body_content"]
+
+
+def render_timeline_flow_slide(slide, slide_data: dict, theme: Dict[str, object]) -> None:
+    """Render Layout 10: Horizontal Timeline / Process Flow (2-5 numbered nodes on a connector line, card per step)."""
+    steps = (slide_data.get("timeline_steps") or [])[:5]
+    if len(steps) < 2:
+        render_bullet_cards_slide(slide, slide_data, theme)
+        return
+
+    count = len(steps)
+    total_w, left0 = 11.7, 0.8
+    col_w = total_w / count
+    node_d, node_top = 0.52, 2.42
+    node_fill = _ensure_white_text_contrast(theme["accent"])
+    title_pt = {2: 18, 3: 17, 4: 15.5}.get(count, 14.5)
+    desc_pt = {2: 14.5, 3: 14, 4: 13}.get(count, 12)
+
+    # Connector line from the first node center to the last one (drawn first so nodes sit on top of it)
+    first_cx = left0 + col_w / 2
+    line = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, Inches(first_cx), Inches(node_top + node_d / 2 - 0.03),
+        Inches(col_w * (count - 1)), Inches(0.06),
+    )
+    line.fill.solid()
+    line.fill.fore_color.rgb = theme["card_border"]
+    line.line.fill.background()
+
+    for idx, step in enumerate(steps):
+        col_left = left0 + idx * col_w
+        cx = col_left + col_w / 2
+
+        # Stage label above the node (e.g. "Phase 1", "Q3 2026")
+        lbl = slide.shapes.add_textbox(Inches(col_left + 0.1), Inches(1.82), Inches(col_w - 0.2), Inches(0.5))
+        tf_lbl = lbl.text_frame
+        tf_lbl.word_wrap = True
+        p_lbl = tf_lbl.paragraphs[0]
+        p_lbl.text = step.get("stage_label", "")
+        p_lbl.alignment = PP_ALIGN.CENTER
+        p_lbl.font.size = Pt(13)
+        p_lbl.font.bold = True
+        p_lbl.font.color.rgb = theme["accent"]
+
+        # Numbered node on the line
+        node = slide.shapes.add_shape(
+            MSO_SHAPE.OVAL, Inches(cx - node_d / 2), Inches(node_top), Inches(node_d), Inches(node_d)
+        )
+        node.fill.solid()
+        node.fill.fore_color.rgb = node_fill
+        node.line.color.rgb = theme["card_bg"]
+        node.line.width = Pt(2.5)
+        p_node = node.text_frame.paragraphs[0]
+        p_node.text = str(idx + 1)
+        p_node.alignment = PP_ALIGN.CENTER
+        p_node.font.size = Pt(14)
+        p_node.font.bold = True
+        p_node.font.color.rgb = RGBColor(255, 255, 255)
+
+        # Step card below the node
+        card_left, card_w, card_top, card_h = col_left + 0.1, col_w - 0.2, 3.15, 2.95
+        draw_card_shape(slide, card_left, card_top, card_w, card_h, theme)
+        strip = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(card_left + 0.2), Inches(card_top + 0.22), Inches(0.6), Inches(0.07)
+        )
+        strip.fill.solid()
+        strip.fill.fore_color.rgb = theme["accent"]
+        strip.line.fill.background()
+
+        tb = slide.shapes.add_textbox(
+            Inches(card_left + 0.15), Inches(card_top + 0.38), Inches(card_w - 0.3), Inches(card_h - 0.5)
+        )
+        tf = tb.text_frame
+        tf.word_wrap = True
+        p_head = tf.paragraphs[0]
+        p_head.text = step.get("title", "")
+        p_head.font.size = Pt(title_pt)
+        p_head.font.bold = True
+        p_head.font.color.rgb = theme["title_content"]
+        p_head.space_after = Pt(6)
+
+        p_det = tf.add_paragraph()
+        p_det.text = step.get("description", "")
+        p_det.font.size = Pt(desc_pt)
+        p_det.font.color.rgb = theme["body_content"]
+
+
+def _style_table_cell(cell, text: str, fill: RGBColor, color: RGBColor, size: float, bold: bool,
+                      align, font_name: Optional[str]) -> None:
+    """Fill one native table cell and format its single paragraph."""
+    cell.fill.solid()
+    cell.fill.fore_color.rgb = fill
+    cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+    cell.margin_left = cell.margin_right = Inches(0.12)
+    cell.margin_top = cell.margin_bottom = Inches(0.05)
+    tf = cell.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = text
+    p.alignment = align
+    p.font.size = Pt(size)
+    p.font.bold = bold
+    p.font.color.rgb = color
+    if font_name:
+        p.font.name = font_name
+        for run in p.runs:
+            run.font.name = font_name
+
+
+def render_comparison_table_slide(slide, slide_data: dict, theme: Dict[str, object]) -> None:
+    """
+    Render Layout 11: Native Editable Comparison Table. Accent header row, zebra body rows in theme colors,
+    bold first (criterion) column. Fonts are set here because apply_slide_fonts only walks text frames.
+    """
+    headers = (slide_data.get("table_headers") or [])[:5]
+    rows = [list(r)[:len(headers)] for r in (slide_data.get("table_rows") or [])[:6]]
+    if len(headers) < 2 or not rows:
+        render_bullet_cards_slide(slide, slide_data, theme)
+        return
+    rows = [r + [""] * (len(headers) - len(r)) for r in rows]
+
+    n_cols, n_rows = len(headers), len(rows)
+    total_w, avail_h, header_h = 11.7, 4.3, 0.6
+    row_h = min(0.85, (avail_h - header_h) / n_rows)
+    frame = slide.shapes.add_table(
+        n_rows + 1, n_cols, Inches(0.8), Inches(1.8), Inches(total_w), Inches(header_h + row_h * n_rows)
+    )
+    table = frame.table
+    table.first_row = True
+    table.horz_banding = False
+
+    first_w = total_w * (0.4 if n_cols == 2 else 0.26)
+    table.columns[0].width = Inches(first_w)
+    for c in range(1, n_cols):
+        table.columns[c].width = Inches((total_w - first_w) / (n_cols - 1))
+    table.rows[0].height = Inches(header_h)
+    for r in range(1, n_rows + 1):
+        table.rows[r].height = Inches(row_h)
+
+    font_heading = theme.get("font_heading")
+    font_body = theme.get("font_body") or font_heading
+    body_pt = 13.5 if n_cols <= 3 and n_rows <= 4 else 12 if n_rows <= 5 else 11
+    header_fill = _ensure_white_text_contrast(theme["accent"])
+    for c, text in enumerate(headers):
+        _style_table_cell(table.cell(0, c), text, header_fill, RGBColor(255, 255, 255), 14.5, True,
+                          PP_ALIGN.LEFT if c == 0 else PP_ALIGN.CENTER, font_heading)
+    for r, row in enumerate(rows, start=1):
+        fill = theme["card_bg"] if r % 2 else theme["bg_content"]
+        for c, text in enumerate(row):
+            is_label = c == 0
+            _style_table_cell(
+                table.cell(r, c), text, fill,
+                theme["title_content"] if is_label else theme["body_content"],
+                body_pt, is_label, PP_ALIGN.LEFT if is_label else PP_ALIGN.CENTER,
+                font_heading if is_label else font_body,
+            )
