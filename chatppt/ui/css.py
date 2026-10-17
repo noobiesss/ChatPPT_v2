@@ -45,19 +45,33 @@ header[data-testid="stHeader"] { background: transparent; }
 .step span { opacity: 0.72; font-size: 0.88rem; }
 @media (max-width: 700px) { .steps { grid-template-columns: 1fr; } }
 
-/* Composer dock (sticky at the bottom of the main area) */
+/* Primary buttons share the app accent color in light and dark themes */
+[data-testid="stBaseButton-primary"] { background: #C96442; border-color: #C96442; color: #FFFFFF; }
+[data-testid="stBaseButton-primary"]:hover { background: #B5573A; border-color: #B5573A; color: #FFFFFF; }
+
+/* Composer dock (sticky at the bottom of the main area).
+   Theme-independent: a frosted blur strip instead of a hard-coded background color, so it looks
+   right in light and dark mode without re-running the script after a theme switch. */
 .st-key-composer_dock {
-    position: sticky; bottom: 0; z-index: 100; padding: 1.5rem 0 0.75rem;
-    background: linear-gradient(to top, __DOCK_BG__ 78%, transparent);
+    position: sticky; bottom: 0; z-index: 100; padding: 1.5rem 0 0.5rem; background: transparent;
+}
+.st-key-composer_dock::before {
+    content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    -webkit-mask-image: linear-gradient(to top, #000 70%, transparent);
+    mask-image: linear-gradient(to top, #000 70%, transparent);
 }
 .st-key-composer {
     background: rgba(128, 128, 128, 0.10); border: 1px solid rgba(128, 128, 128, 0.35);
     border-radius: 20px; padding: 0.7rem 1rem 0.6rem;
+    -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.06);
 }
-.st-key-composer textarea { font-size: 1rem; }
+.st-key-composer textarea { font-size: 1rem; background: transparent !important; box-shadow: none !important; }
 .st-key-composer [data-baseweb="textarea"], .st-key-composer [data-baseweb="base-input"] {
-    border: none !important; background: transparent !important;
+    border: none !important; background: transparent !important; box-shadow: none !important; outline: none !important;
 }
+.composer-note { text-align: center; font-size: 0.74rem; opacity: 0.6; margin-top: 0.4rem; }
 .st-key-composer .stButton > button, .st-key-composer [data-testid="stPopover"] > div > button {
     border-radius: 999px; font-size: 0.82rem; padding: 0.25rem 0.5rem; white-space: nowrap;
     overflow: visible;
@@ -71,18 +85,7 @@ header[data-testid="stHeader"] { background: transparent; }
 """
 
 
-def _dock_background() -> str:
-    """Opaque color for the sticky composer's fade-out, matched to the active Streamlit theme."""
-    try:
-        theme_type = st.context.theme.type  # "light", "dark" or None (requires Streamlit >= 1.46)
-    except Exception:  # noqa: BLE001
-        theme_type = None
-    if theme_type == "dark":
-        return "#0E1117"
-    return st.get_option("theme.backgroundColor") or "#FFFFFF"
-
-
 def inject_css(active_chat_id: str) -> None:
     """Inject the global stylesheet and highlight the active chat button in the sidebar."""
-    css = APP_CSS.replace("__ACTIVE__", active_chat_id).replace("__DOCK_BG__", _dock_background())
+    css = APP_CSS.replace("__ACTIVE__", active_chat_id)
     st.markdown(css, unsafe_allow_html=True)

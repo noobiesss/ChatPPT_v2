@@ -107,6 +107,10 @@ def render_composer(chat: dict) -> None:
             send = c_send.button(
                 send_label, type="primary", use_container_width=True, key=f"send_{cid}", disabled=busy
             )
+        st.markdown(
+            '<div class="composer-note">ChatPPT can make mistakes. Please check responses.</div>',
+            unsafe_allow_html=True,
+        )
 
     if send:
         handle_send(

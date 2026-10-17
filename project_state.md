@@ -3,8 +3,8 @@
 > **How to use:** Paste or upload this file at the start of a new chat, together with ONLY the module file(s) the task needs (see section 2a — you no longer need to upload or return the whole code base).
 > Read it fully before touching any code. **Update "Changelog", "Github Commit Log", and "Pending Tasks" at the end of every work session** and return the updated file.
 
-Last updated: 2026-10-17 (4a-1, 4a-2, 4a-3 ALL VERIFIED; code split from one 3.4k-line app.py into the `chatppt/` package + `smoke_test.py`)
-Github Commit Log: `refactor: split monolithic app.py into chatppt/ package (schemas, presets, llm_client, outline, images, pptx_template/render/build, ui/*) with identical behavior; add offline smoke_test.py`
+Last updated: 2026-10-17 (theme: System/Light/Dark selector restored via [theme.light] + [theme.dark] in .streamlit/config.toml, warm Claude-style palettes for both)
+Github Commit Log: `style(theme): define [theme.light]/[theme.dark] in .streamlit/config.toml so users can choose System/Light/Dark; optimized light palette`
 ---
 
 ## 0. User Preferences (MUST FOLLOW)
@@ -45,7 +45,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 | `chatppt/pptx_render.py` | Drawing helpers + the 8 layout renderers | changing how one layout looks |
 | `chatppt/pptx_build.py` | `build_presentation_pptx` (deck assembly, layout dispatch) | deck-level flow, adding a layout dispatch entry |
 | `chatppt/ui/state.py` | Session-state defaults, chat create/delete | new session key or default setting |
-| `chatppt/ui/css.py` | `APP_CSS`, theme-aware CSS injection | look & feel |
+| `chatppt/ui/css.py` | `APP_CSS`, CSS injection (theme-independent: no hard-coded page colors) | look & feel |
 | `chatppt/ui/settings.py` | Settings dialog (provider -> key -> model, image mode/keys), `get_active_model_cfg`, `get_model_options` | settings window, provider/model selection |
 | `chatppt/ui/sidebar.py` | Sidebar (New chat, Settings, chat list) | sidebar |
 | `chatppt/ui/messages.py` | Hero screen + chat messages | welcome screen/message look |
@@ -126,7 +126,10 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 - [x] Bug 4a-1 (slide count) — CLOSED & VERIFIED
 - [x] Bug 4a-2 (custom `.pptx` template inheritance) — CLOSED & VERIFIED
 - [x] Bug 4a-3 (2-option Unsplash/placeholder image mode + Groq `gpt-oss-120b` fix) — CLOSED & VERIFIED
-- [ ] User to run `python smoke_test.py` and `streamlit run app.py` once on the split code base to confirm (behavior was verified identical function-by-function; UI could not be launched in the sandbox).
+- [x] Split code base verified by user (`smoke_test.py` passed, app runs).
+- [ ] User to check the light/dark composer look after the CSS change (`ui/css.py`, `ui/composer.py`).
+- [x] `config.toml` lives in `.streamlit/` (50 MB upload limit + themes apply).
+- [ ] User to check Light / Dark / System after the theme change; tune colors only in `.streamlit/config.toml` (never put colors in the bare `[theme]` table: it locks the app to one mode).
 - [ ] Optional: deploy to GitHub + Streamlit Community Cloud / Railway for 24/7 hosting.
 - [ ] Optional: next UI or rendering enhancements requested by the user.
 
@@ -140,3 +143,5 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 | 2026-10-17 | Bug 4a-2 verified: custom `.pptx` template inheritance (backgrounds + sample-slide fonts/colors only, master/layout decorations stripped, WCAG contrast guard); one-page Settings rework |
 | 2026-10-17 | Bug 4a-3 & reasoning model fix verified: 2-option image mode (`Unsplash Photo First (Fallback to AI)` [default] vs `Reserve Photo Placeholder`), 2-word Unsplash retry, guaranteed `image_split` slide, and `max_completion_tokens=8192` + `reasoning_effort` tuning for Groq `gpt-oss-120b` / `qwen3` |
 | 2026-10-17 | Refactor: monolithic `app.py` (112 top-level definitions, 3.4k lines) split into `chatppt/` package (schemas, presets, extraction, prompts, llm_client, outline, images, pptx_template, pptx_render, pptx_build, ui/*) + thin `app.py`; every definition verified AST-identical to the original; offline `smoke_test.py` added; `_derive_fallback_keywords` now lives in `images.py` to keep layering |
+| 2026-10-17 | UI: composer dock no longer uses a Python-detected background color (it stayed dark after switching to Light); now a frosted blur strip + translucent composer works in both themes; textarea fully transparent (no dark outline); primary buttons use accent #C96442; footer note `ChatPPT can make mistakes. Please check responses.` under the composer; removed `_dock_background()` |
+| 2026-10-17 | Theme: `.streamlit/config.toml` now defines `[theme.light]` and `[theme.dark]` (+ sidebar tables) so the menu offers System / Light / Dark; shared accent #C96442, warm cream light palette (#FAF9F5 / #F0EEE6 / text #1F1E1D), warm charcoal dark palette (#262624 / #30302E / text #ECEBE4) |
