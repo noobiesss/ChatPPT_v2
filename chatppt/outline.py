@@ -151,6 +151,67 @@ def mentions_slide_count(text: str) -> bool:
     return bool(_SLIDE_COUNT_MENTION_RE.search(text or ""))
 
 
+# Relative slide-count edits in revision notes, e.g. "add one more slide", "remove the last slide", "\u52a0\u4e00\u9875"
+_EN_QTY = r"\d+|an?|one|two|three|four|five|six"
+_EN_SKIP = r"(?!(?:to|on|in|of|for|at|the|this|that|each|every)\b)"
+_EN_ADD_RE = re.compile(
+    rf"\b(?:add|insert|append|include|create)\s+(?P<n1>{_EN_QTY})\s+(?:(?:more|extra|additional|new|another)\s+)?"
+    rf"(?:{_EN_SKIP}[\w-]+\s+){{0,3}}?(?:slides?|pages?)\b(?!\s*\d)"
+    rf"|\b(?P<n2>\d+|one|two|three|four|five|six)\s+(?:more|extra|additional|new)\s+(?:slides?|pages?)\b"
+    rf"|\banother\s+(?:{_EN_SKIP}[\w-]+\s+){{0,2}}?(?:slide|page)\b(?!\s*\d)",
+    re.IGNORECASE,
+)
+_EN_REMOVE_RE = re.compile(
+    rf"\b(?:remove|delete|drop|cut)\s+(?:(?P<n>{_EN_QTY})\s+)?(?:(?:the|this|that|last|first|final|extra)\s+)*(?:slides?|pages?)\b",
+    re.IGNORECASE,
+)
+# Chinese: verbs add = \u52a0/\u589e\u52a0/\u6dfb\u52a0/\u65b0\u589e/\u8865\u5145 ; remove = \u5220\u9664/\u5220\u6389/\u5220/\u53bb\u6389/\u51cf\u5c11/\u51cf ; unit = \u9875/\u9801/\u5f20/\u5f35
+_ZH_QTY = r"\d+|[\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]"
+_ZH_GAP = r"(?:(?![\u5230\u5728\u7b2c\u6bcf])\w){0,4}?"
+_ZH_ADD_RE = re.compile(
+    rf"(?:\u52a0|\u589e\u52a0|\u6dfb\u52a0|\u65b0\u589e|\u8865\u5145)\s*(?P<n>{_ZH_QTY})?\s*[\u4e2a\u500b]?\s*{_ZH_GAP}[\u9875\u9801\u5f20\u5f35]"
+)
+_ZH_REMOVE_RE = re.compile(
+    rf"(?:\u5220\u9664|\u5220\u6389|\u5220|\u53bb\u6389|\u51cf\u5c11|\u51cf)\s*(?P<n>{_ZH_QTY})?\s*[\u4e2a\u500b]?\s*{_ZH_GAP}[\u9875\u9801\u5f20\u5f35]"
+)
+_QTY_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "\u4e00": 1, "\u4e8c": 2, "\u4e24": 2, "\u4e09": 3, "\u56db": 4, "\u4e94": 5,
+    "\u516d": 6, "\u4e03": 7, "\u516b": 8, "\u4e5d": 9, "\u5341": 10,
+}
+# Same range as the "Number of slides" slider in the composer
+MIN_SLIDES, MAX_SLIDES = 4, 20
+
+
+def _qty_value(token: Optional[str]) -> int:
+    """Convert a quantity token ("2", "one", "\u4e24") to an int; a missing quantity means 1."""
+    if not token:
+        return 1
+    token = token.lower()
+    return int(token) if token.isdigit() else _QTY_WORDS.get(token, 1)
+
+
+def parse_slide_count_change(text: str, current_count: int) -> Optional[int]:
+    """
+    Detect a RELATIVE slide-count edit in a revision note ("add one more slide", "remove the last slide").
+    Returns the new absolute target (current_count + delta, clamped to the slider range),
+    or None when the note contains no relative change.
+    """
+    text = text or ""
+    delta = 0
+    for m in _EN_ADD_RE.finditer(text):
+        delta += _qty_value(m.groupdict().get("n1") or m.groupdict().get("n2"))
+    for m in _ZH_ADD_RE.finditer(text):
+        delta += _qty_value(m.group("n"))
+    for m in _EN_REMOVE_RE.finditer(text):
+        delta -= _qty_value(m.group("n"))
+    for m in _ZH_REMOVE_RE.finditer(text):
+        delta -= _qty_value(m.group("n"))
+    if delta == 0:
+        return None
+    return max(MIN_SLIDES, min(MAX_SLIDES, current_count + delta))
+
+
 def _request_outline(
     provider: str,
     api_key: str,

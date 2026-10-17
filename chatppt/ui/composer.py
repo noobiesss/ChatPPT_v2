@@ -14,6 +14,10 @@ from chatppt.ui.settings import get_active_model_cfg, open_settings
 
 def render_composer(chat: dict) -> None:
     ss = st.session_state
+    # A revision such as "add one more slide" queued a new target: apply it BEFORE the slider is created
+    synced = ss.pop("opt_slides_sync", None)
+    if synced is not None:
+        ss["opt_slides"] = int(synced)
     cid, ver = chat["id"], chat["composer_ver"]
     text_key, file_key = f"composer_text_{cid}_{ver}", f"composer_file_{cid}_{ver}"
     busy = chat["pending"] is not None

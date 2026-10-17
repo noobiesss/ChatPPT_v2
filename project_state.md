@@ -3,8 +3,8 @@
 > **How to use:** Paste or upload this file at the start of a new chat, together with ONLY the module file(s) the task needs (see section 2a — you no longer need to upload or return the whole code base).
 > Read it fully before touching any code. **Update "Changelog", "Github Commit Log", and "Pending Tasks" at the end of every work session** and return the updated file.
 
-Last updated: 2026-10-17 (theme: System/Light/Dark selector restored via [theme.light] + [theme.dark] in .streamlit/config.toml, warm Claude-style palettes for both)
-Github Commit Log: `style(theme): define [theme.light]/[theme.dark] in .streamlit/config.toml so users can choose System/Light/Dark; optimized light palette`
+Last updated: 2026-10-17 (revision fix: relative slide-count edits like "add one more slide" now raise the target to current deck size + delta and sync the Number-of-slides slider)
+Github Commit Log: `fix(outline): treat "add/remove N slide(s)" revisions as relative to the current deck, keep existing slides, sync the slide slider`
 ---
 
 ## 0. User Preferences (MUST FOLLOW)
@@ -86,7 +86,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
    - Live model discovery: `fetch_live_models()` (`@st.cache_data(ttl=600)`), `resolve_model_options()`, `_is_chat_model()`, `_derive_models_url()`.
    - JSON & reasoning protection: `extract_clean_json_str()` (strips closed/unclosed `<think>` blocks and code fences), `repair_json_str()`, `call_openai_compatible_json()` (sets `max_completion_tokens=8192` / `max_tokens=8192`, sets `reasoning_effort="low"` for `gpt-oss` and `"none"` for Groq `qwen3`, checks `message.reasoning` if `content` is empty, repairs `failed_generation`, and retries without `response_format` or optional params).
 5. **Outline Router & Sanitizer:**
-   - `generate_smart_outline()` -> `_request_outline()` (with retry), `_build_count_correction()` (up to 2 corrective retries), `_trim_slides_to_count()`, `mentions_slide_count()`.
+   - `generate_smart_outline()` -> `_request_outline()` (with retry), `_build_count_correction()` (up to 2 corrective retries), `_trim_slides_to_count()`, `mentions_slide_count()` (absolute counts, e.g. "6 slides" -> count not enforced), `parse_slide_count_change()` (relative edits, e.g. "add one more slide" / "remove the last slide" / "加一页" -> new target = current deck size + delta, clamped 4-20; takes precedence over `mentions_slide_count`).
    - `sanitize_outline_dict()` (equalizes chart `categories`/`values`, guarantees >=1 `image_split` slide on 4+ slide decks, defaults `image_source_mode` to `IMAGE_MODE_UNSPLASH_FIRST`).
 6. **Two-Option Image Engine:**
    - `resolve_slide_image_bytes()`: Option 1 queries `fetch_unsplash_image_bytes()` first (strips `Client-ID ` prefix, retries with 2-word core query if needed) and falls back to `generate_ai_image_bytes()` (Imagen 3 `imagen-3.0-generate-002` -> Pollinations AI); Option 2 returns `None` to render a reserved placeholder box.
@@ -130,6 +130,7 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 - [ ] User to check the light/dark composer look after the CSS change (`ui/css.py`, `ui/composer.py`).
 - [x] `config.toml` lives in `.streamlit/` (50 MB upload limit + themes apply).
 - [ ] User to check Light / Dark / System after the theme change; tune colors only in `.streamlit/config.toml` (never put colors in the bare `[theme]` table: it locks the app to one mode).
+- [ ] User to verify: generate 8 slides, then revise with "add one more slide conclusion" -> expect 9 slides (old 8 kept, Conclusion last) and the slider showing 9.
 - [ ] Optional: deploy to GitHub + Streamlit Community Cloud / Railway for 24/7 hosting.
 - [ ] Optional: next UI or rendering enhancements requested by the user.
 
@@ -145,3 +146,4 @@ Dependencies only point DOWN this list (no cycles; core modules never import `ui
 | 2026-10-17 | Refactor: monolithic `app.py` (112 top-level definitions, 3.4k lines) split into `chatppt/` package (schemas, presets, extraction, prompts, llm_client, outline, images, pptx_template, pptx_render, pptx_build, ui/*) + thin `app.py`; every definition verified AST-identical to the original; offline `smoke_test.py` added; `_derive_fallback_keywords` now lives in `images.py` to keep layering |
 | 2026-10-17 | UI: composer dock no longer uses a Python-detected background color (it stayed dark after switching to Light); now a frosted blur strip + translucent composer works in both themes; textarea fully transparent (no dark outline); primary buttons use accent #C96442; footer note `ChatPPT can make mistakes. Please check responses.` under the composer; removed `_dock_background()` |
 | 2026-10-17 | Theme: `.streamlit/config.toml` now defines `[theme.light]` and `[theme.dark]` (+ sidebar tables) so the menu offers System / Light / Dark; shared accent #C96442, warm cream light palette (#FAF9F5 / #F0EEE6 / text #1F1E1D), warm charcoal dark palette (#262624 / #30302E / text #ECEBE4) |
+| 2026-10-17 | Fix: revision "add one more slide conclusion" replaced slide 8 because the slider (8) was still enforced and trimmed the 9th slide. Now `parse_slide_count_change()` (outline.py) computes target = current slides + delta, `handle_send` (generation.py) passes it as `num_slides`, appends the current slide titles + "keep all existing slides" to the LLM source, and queues `opt_slides_sync` which `render_composer` (composer.py) applies to the slider before it is created. Smoke test extended with 8 parser assertions |

@@ -6,7 +6,7 @@ Edit when: changing what happens after the user presses Generate.
 import streamlit as st
 
 from chatppt.extraction import extract_images_from_report, extract_text_from_uploaded_file
-from chatppt.outline import generate_smart_outline, mentions_slide_count
+from chatppt.outline import generate_smart_outline, mentions_slide_count, parse_slide_count_change
 from chatppt.presets import CUSTOM_PROVIDER, REVISION_MAX_CHARS
 from chatppt.schemas import IMAGE_MODE_UNSPLASH_FIRST
 from chatppt.ui.common import _short
@@ -28,12 +28,30 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
         report is None and bool(chat["slides"]) and bool(chat["source_text"]) and len(text) <= REVISION_MAX_CHARS
     )
 
+    # A relative edit such as "add one more slide" means: new target = current deck size + delta
+    relative_target = parse_slide_count_change(text, len(chat["slides"])) if is_revision else None
+    if relative_target is not None:
+        prev_count = len(chat["slides"])
+        num_slides = relative_target
+        # The composer applies this before its slider is created, so the slider follows the new target
+        st.session_state["opt_slides_sync"] = relative_target
+
     if is_revision:
         source_for_llm = (
             chat["source_text"]
             + "\n\nUser revision instructions (apply these when designing the deck): "
             + text
         )
+        if relative_target is not None:
+            deck_titles = "\n".join(
+                f"  {i + 1}. {s.get('action_title', '')}" for i, s in enumerate(chat["slides"])
+            )
+            source_for_llm += (
+                f"\n\nThe current deck has {prev_count} slides:\n{deck_titles}\n"
+                f"The revised deck MUST have exactly {relative_target} slides. Keep ALL existing slides in their "
+                "current order and apply ONLY the requested change (a new conclusion/summary slide goes last; "
+                "other new slides go where they fit best). Do not replace or merge existing slides."
+            )
     else:
         with st.spinner("Reading your file..."):
             file_text = extract_text_from_uploaded_file(report) if report is not None else ""
@@ -49,7 +67,7 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
         chat["title"] = (report.name if report is not None else text.split("\n")[0])[:40] or "New chat"
 
     # A revision that itself mentions a slide count (e.g. "make it 6 slides") overrides the slider
-    enforce_count = not (is_revision and mentions_slide_count(text))
+    enforce_count = relative_target is not None or not (is_revision and mentions_slide_count(text))
     slide_label = f"{num_slides} slides" if enforce_count else "slide count per your request"
     meta = f"{slide_label} · {language} · {_short(model_cfg['provider'], 12)} / {_short(model_cfg['model'], 24)}"
     shown = text if len(text) <= 500 else text[:500] + f"… ({len(text):,} characters)"

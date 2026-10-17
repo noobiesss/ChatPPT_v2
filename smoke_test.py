@@ -103,13 +103,22 @@ def check_custom_template() -> None:
 
 def check_helpers() -> None:
     from chatppt.llm_client import extract_clean_json_str
-    from chatppt.outline import mentions_slide_count
+    from chatppt.outline import mentions_slide_count, parse_slide_count_change
     from chatppt.ui.editor_text import format_points_for_editor, parse_points_from_editor
 
     pts = [{"heading": "A", "detail": "B"}, {"heading": "C", "detail": "D"}]
     assert parse_points_from_editor(format_points_for_editor(pts)) == pts
     assert extract_clean_json_str('<think>hmm</think>```json\n{"a": 1}\n```') == '{"a": 1}'
     assert mentions_slide_count("make it 6 slides") and not mentions_slide_count("shorter titles")
+    # Relative slide-count edits: new target = current deck size + delta (regression: "add one more slide" used to be trimmed back)
+    assert parse_slide_count_change("add one more slide conclusion", 8) == 9
+    assert parse_slide_count_change("add 2 more slides", 8) == 10
+    assert parse_slide_count_change("add a conclusion slide", 8) == 9
+    assert parse_slide_count_change("remove the last slide", 8) == 7
+    assert parse_slide_count_change("\u52a0\u4e00\u9875\u7ed3\u8bba", 8) == 9
+    assert parse_slide_count_change("make it 6 slides", 8) is None
+    assert parse_slide_count_change("add a chart to slide 3", 8) is None
+    assert parse_slide_count_change("shorter titles", 8) is None
     print("[ok] helpers")
 
 
