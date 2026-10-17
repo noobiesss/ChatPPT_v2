@@ -389,6 +389,31 @@ def check_preview() -> None:
     print("[ok] preview: all 11 layouts render, overflow estimate (Latin + CJK), HTML escaped")
 
 
+def check_browser_prefs() -> None:
+    from chatppt.prefs import collect_prefs, parse_prefs, prefs_json
+
+    settings = {"provider": "Google Gemini", "models": {"Google Gemini": "gemini-x"}, "image_mode": "Reserve Photo Placeholder",
+                "use_imagen": True, "api_keys": {"Google Gemini": "AIza-KEY", "Groq (Fast & Free Tier)": ""},
+                "unsplash_key": "UNSPLASH-KEY", "remember_keys": True}
+    options = {"opt_slides": 12, "opt_theme": "Modern Dark", "opt_language": "English", "opt_tone": None}
+    raw = prefs_json(collect_prefs(settings, options))
+    back = parse_prefs(raw)
+    assert back["api_keys"] == {"Google Gemini": "AIza-KEY"} and back["unsplash_key"] == "UNSPLASH-KEY"
+    assert back["settings"]["provider"] == "Google Gemini" and back["options"] == {"opt_slides": 12, "opt_theme": "Modern Dark",
+                                                                                   "opt_language": "English"}
+    assert prefs_json(collect_prefs(settings, options)) == raw  # stable: unchanged prefs are never rewritten
+    # Remember-keys off: no secret of any kind is in the payload
+    no_keys = prefs_json(collect_prefs(dict(settings, remember_keys=False), options))
+    assert "KEY" not in no_keys and parse_prefs(no_keys)["remember_keys"] is False
+    # Garbage, other versions, unknown providers and oversized values are dropped
+    for bad in (None, "", "not json", "[]", '{"v": 99}'):
+        assert parse_prefs(bad) is None
+    hostile = parse_prefs('{"v": 1, "api_keys": {"Evil": "x", "Google Gemini": "' + "A" * 600 + '"}, '
+                          '"settings": {"provider": "Evil", "image_mode": "x"}, "options": {"opt_slides": 999}}')
+    assert hostile["api_keys"] == {} and hostile["settings"] == {} and hostile["options"] == {"opt_slides": 20}
+    print("[ok] browser prefs: round trip, stable payload, no keys when off, hostile payload sanitized")
+
+
 def check_token_limits() -> None:
     import json
     import urllib.error
@@ -448,7 +473,8 @@ def check_token_limits() -> None:
 if __name__ == "__main__":
     for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide,
                check_new_layouts, check_report_images, check_assistant, check_retrieval, check_patch, check_token_limits,
-               check_history_and_projects, check_structure_ops, check_preview):
+               check_history_and_projects, check_structure_ops, check_preview,
+               check_browser_prefs):
         fn()
     print("ALL SMOKE TESTS PASSED")
     sys.exit(0)

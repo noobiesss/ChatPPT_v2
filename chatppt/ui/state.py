@@ -82,9 +82,12 @@ def init_state() -> None:
             "image_mode": IMAGE_MODE_UNSPLASH_FIRST,
             "unsplash_key": "",
             "use_imagen": False,
+            "remember_keys": True,  # keep API keys in this browser (chatppt/prefs.py)
         }
     ss.settings.setdefault("provider", next(iter(LLM_PROVIDERS)))
     ss.settings.setdefault("models", {})
+    ss.settings.setdefault("remember_keys", True)
+    ss.setdefault("_session_nonce", uuid.uuid4().hex)  # identifies this browser session to the prefs bridge
     if ss.settings.get("image_mode") not in IMAGE_MODE_OPTIONS:
         ss.settings["image_mode"] = IMAGE_MODE_UNSPLASH_FIRST
     ss.setdefault("custom_tpl_bytes", None)

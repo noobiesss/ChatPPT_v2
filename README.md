@@ -1,72 +1,200 @@
-# 📊 ChatPPT V2 — Smart Visual Presentation Generator
+<p align="center">
+  <img src="assets/logo.png" alt="ChatPPT logo" width="104">
+</p>
 
-**ChatPPT V2** is an AI-powered presentation engineering web app built with **Python**, **Streamlit**, **Pydantic v2**, and **`python-pptx`**. Instead of generating monotonous bullet-point slides, ChatPPT acts as a consulting-style presentation architect—featuring a **Claude-style conversational UI**, **multi-provider LLM support** with **live model discovery**, **11 distinct visual slide layouts**, **native editable PowerPoint charts**, **Smart Hybrid image routing**, and **deep `.pptx` custom template inheritance**.
+# ChatPPT V2
 
----
+**Turn a report or your notes into a consulting-style PowerPoint deck by chatting.**
 
-## ✨ Key Features
+ChatPPT V2 is a Streamlit web app. You give it a PDF, Word file or pasted text; it designs a slide outline with conclusion-first titles, picks a fitting layout for every slide (cards, KPIs, charts, timelines, comparison tables, images…), lets you refine it in plain language or edit it by hand, and renders a fully editable `.pptx` with native PowerPoint charts and tables.
 
-* **Claude-Style Conversational Interface:**
-  * Manage multiple presentation sessions in the left sidebar (`＋ New chat`, switch, or delete chats).
-  * Sticky bottom composer bar with popovers for file attachment (`📎`), theme/template styling (`🎨`), tone selection, provider/model picker (`🤖`), and slide count/language (`⚙`).
-  * **Conversational Revisions:** Send short follow-up prompts (e.g., *"make it 6 slides and add more charts"*) to regenerate and refine the deck outline from the same source material.
-* **Multi-Provider BYOK (Bring Your Own Key) Architecture:**
-  * Supports **Google Gemini** (native `google-genai` SDK), **Groq**, **OpenAI**, **DeepSeek**, **OpenRouter**, and any **Custom OpenAI-Compatible API** (SiliconFlow, Together AI, Ollama, vLLM).
-  * **Live Model Discovery:** Automatically queries the provider's `/models` endpoint (and filters out non-chat models like Whisper/TTS/Embeddings) with a 10-minute cache and manual refresh button.
-  * **Automatic JSON Repair & Slide-Count Verification:** Strips `<think>` reasoning blocks, repairs truncated or stray-brace JSON (`failed_generation`), and automatically retries or trims if a model misses the target slide count.
-  * **In-Memory Session Privacy:** All API keys live strictly in the Settings dialog (`⚙️ Settings`) inside per-session server memory and are never written to disk.
-* **Multi-Source Document & Embedded Figure Ingestion:**
-  * Upload `.pdf`, `.docx`, `.txt`, or `.md` reports, or paste raw notes directly.
-  * Automatically extracts embedded diagrams, charts, and images from `.pdf` and `.docx` files (logos, icons and duplicates are skipped). With the **Report Images First** image mode they fill `image_split` slides in document order, or you pick a figure per slide in the outline editor.
-* **Consulting-Grade Copywriting & 11 Visual Layouts:**
-  * Enforces conclusion-first **Action Titles**, scannable **Bold Heading + Concise Detail** anchor cards, and a **Bottom Takeaway ("So What?") Banner** on content slides.
-* **Native Editable PowerPoint Charts:**
-  * Extracts real numerical series from your report and renders native, editable PowerPoint Column, Line, and Pie charts (`XL_CHART_TYPE`).
-* **Smart Hybrid Image Engine:**
-  * Automatically routes `image_split` slides between **Unsplash Stock Photography** (`stock_photo` for real-world scenes, teams, hardware, cities) and **AI Concept Illustrations** (`ai_illustration` via **Google Imagen 3** or **Pollinations AI** fallback), plus **Extracted Report Figures**, **Custom Image Uploads**, and **Wireframe Placeholders**.
-  * Uses `Pillow (PIL)` for aspect-ratio-safe bounding box fitting and automatic `WEBP`/`RGBA` to `RGB` conversion.
-* **Built-in 16:9 Themes & Smart Custom `.pptx` Template Inheritance:**
-  * Choose from 4 built-in widescreen palettes (*Corporate Blue*, *Modern Dark*, *Minimalist Light*, *Emerald Forest*) or upload your own `.pptx` template.
-  * Custom `.pptx` mode automatically scales non-16:9 canvases (e.g., `10 × 5.625 in` Canva/Google Slides exports) to `13.333 × 7.5 in`, preserves Slide Master/layout backgrounds, replays decorative slide artwork/frames/corner logos, and extracts the template's `theme1.xml` / slide color scheme and fonts.
+It works with your own API key for Google Gemini, Groq, OpenAI, DeepSeek, OpenRouter or any OpenAI-compatible endpoint.
 
 ---
 
-## 🎨 Supported Visual Slide Layouts
+## Contents
 
-| Layout Archetype (`LayoutType`) | Visual Structure | Best Used For |
-| :--- | :--- | :--- |
-| **`cover`** | Widescreen title, accent bar, and subtitle | Slide 1 opening cover |
-| **`section_divider`** | High-contrast background with section header & context | Theme transitions in decks with 8+ slides |
-| **`bullet_cards`** | 3–4 stacked horizontal cards with numbered badges | Sequential explanations & general takeaways |
-| **`three_cards`** | 3 parallel vertical pillar cards with top accent strips | 3 core pillars, architecture layers, or strategies |
-| **`two_column`** | Side-by-side comparison containers with colored headers | Pros vs. Cons, Before vs. After, Problem vs. Solution |
-| **`kpi_metrics`** | 2–4 big-number hero cards (`46pt` bold metric + context) | Financial highlights, latency drops, ROI, benchmarks |
-| **`chart_slide`** | Native editable PPTX chart (left) + insight cards (right) | Time-series trends, category comparisons, market share |
-| **`image_split`** | Framed image + caption on one side, key points on the other | Product visuals, system diagrams, workflows, case studies |
-| **`timeline_flow`** | 3–5 numbered nodes on a connector line, stage label above and a step card below each | Roadmaps, phased plans, milestones, business processes |
-| **`comparison_table`** | Native editable PowerPoint table: accent header row, zebra rows, bold criterion column | Options / vendors / scenarios compared across several criteria |
-| **`closing`** | Large centered phrase + accent bar + optional presenter line (opt-in only) | Thank-you / Q&A slide when explicitly requested |
+- [Features](#features)
+- [Privacy and your API keys](#privacy-and-your-api-keys)
+- [Quick start](#quick-start)
+- [Deploy on Streamlit Community Cloud](#deploy-on-streamlit-community-cloud)
+- [How to use](#how-to-use)
+- [Slide layouts](#slide-layouts)
+- [Project structure](#project-structure)
+- [Development and tests](#development-and-tests)
 
 ---
 
-## 🛠️ Tech Stack
+## Features
 
-* **Frontend & Conversational UI:** [Streamlit](https://streamlit.io/) (`>=1.57.0`, theme-neutral CSS for light & dark mode)
-* **LLM Providers:** [Google GenAI SDK](https://pypi.org/project/google-genai/) + zero-dependency OpenAI-compatible REST client (`urllib.request`) for Groq, OpenAI, DeepSeek, OpenRouter, and custom endpoints
-* **Schema Validation & Structured Output:** [Pydantic v2](https://docs.pydantic.dev/)
-* **Slide & Chart Rendering Engine:** [python-pptx](https://python-pptx.readthedocs.io/)
-* **Document & Image Processing:** `pypdf`, `python-docx`, `Pillow (PIL)`
+### Chat that builds and edits the deck
+- **One Send button.** Each message is routed automatically:
+  - a **question** ("why three cards on slide 4?") gets an answer, and the deck stays untouched;
+  - an **edit to specific slides** ("turn slide 3 into a comparison table") rewrites only those slides in seconds; every other slide stays exactly as it was;
+  - a **deck-wide change** ("make it 6 slides, more charts", "translate to Chinese") regenerates the outline.
+- **Relative slide-count edits** such as "add one more slide" or "remove the last slide" keep all existing slides and update the slide-count control.
+- **Long documents:** questions about a long PDF or DOCX use the passages most relevant to the question (lightweight BM25 retrieval, no vector database), not just the first pages.
+
+### Outline editor (no tokens needed)
+- Edit every slide's layout, title, points, KPIs, chart data, timeline steps, table cells, image options and takeaway banner.
+- **Move up / move down / insert / delete** slides with one click. The cover always stays first and a closing slide always stays last.
+- **Live wireframe preview** of each open slide in the current theme, with a warning when text is likely to overflow its card or box.
+- **Undo / Redo** across AI changes and structure edits (up to 20 versions).
+
+### Visual quality
+- **11 layouts**, including native editable charts (bar, line, pie) and native editable tables. See [Slide layouts](#slide-layouts).
+- Conclusion-first **action titles**, short bold headings with concise details, and a "so what?" **takeaway banner**.
+- **No invented numbers:** charts, KPIs and tables only use figures found in your source.
+
+### Images
+Three modes, chosen globally in Settings or per slide:
+- **Unsplash / AI**: an Unsplash stock photo, falling back to an AI image (Google Imagen 3 if enabled, otherwise Pollinations).
+- **Placeholder**: an empty photo box to fill in PowerPoint.
+- **Report figures**: diagrams and photos extracted from your uploaded PDF/DOCX (logos, icons and duplicates are skipped), assigned in order or picked per slide with a thumbnail.
+
+### Themes and templates
+- 4 built-in 16:9 palettes: *Corporate Blue*, *Modern Dark*, *Minimalist Light*, *Emerald Forest*.
+- **Your own `.pptx` template:** ChatPPT inherits its backgrounds, theme colors and fonts and scales non-16:9 templates to widescreen. Decorations on the template's sample slides and layouts are removed so they never collide with generated content.
+
+### Save and resume
+- **Settings are remembered in your browser** (provider, models, image mode, theme, slide count, language, tone), and so are your API keys unless you turn that off. See [Privacy and your API keys](#privacy-and-your-api-keys).
+- **Save project** downloads a `.chatppt.json` file with the outline, conversation, source text and report figures. **Open project** in the sidebar restores it after a page refresh, on another computer, or for a colleague. Project files never contain API keys.
+
+### Providers
+- Google Gemini (native SDK), Groq, OpenAI, DeepSeek, OpenRouter, or any **custom OpenAI-compatible endpoint** (SiliconFlow, Together AI, Ollama, vLLM…).
+- Live model lists from each provider, refreshed every 10 minutes or on demand.
+- Robust output handling: JSON repair, reasoning-model support (`gpt-oss`, `qwen3`, `deepseek-reasoner`), automatic slide-count correction, and a readable explanation when a provider plan's tokens-per-minute limit is too small for the request.
 
 ---
 
-## 🚀 Installation & Quick Start
+## Privacy and your API keys
 
-### 1. Prerequisites
-* **Python 3.9+** installed on your system.
-* At least one LLM API Key (**Google Gemini**, **Groq**, **OpenAI**, **DeepSeek**, or **OpenRouter**).
+ChatPPT is a "bring your own key" app. Here is exactly what happens to your key:
 
-### 2. Install Dependencies
-Clone or download this repository, navigate to the project folder, and install the required packages:
+| Question | Answer |
+| :--- | :--- |
+| Where is my key stored? | **Only in your own browser** (its local storage), and only if "Remember my API keys on this browser" is on. Nothing is stored on the server: no database, no files. |
+| Where is my key sent? | To the app's server while you use it, because the server makes the call to the AI provider. It is held in memory for your session only and sent **only to the provider you selected** (and to Unsplash / Google Imagen for images, if you use them). |
+| Is it logged? | No. The code never prints, logs or displays keys. |
+| Can other users see my key? | No. Every browser session is separate. |
+| Is it in saved projects? | No. `.chatppt.json` project files never contain API keys. |
+| How do I remove it? | Settings → section 3 → **Forget this browser** erases everything saved in that browser. Unticking "Remember my API keys" and pressing **Save** removes only the keys. |
+
+**Please keep in mind:**
+
+- As with every bring-your-own-key web app, you are trusting whoever runs the server, because the key passes through it. This repository is public, so you can check the code yourself; if you prefer, run ChatPPT locally (see [Quick start](#quick-start)).
+- Protect yourself on the provider's side: create a **separate key** just for ChatPPT and set a **spending limit**, so you can revoke it at any time.
+- On a **shared or public computer**, untick "Remember my API keys" or click **Forget this browser** when you are done.
+
+---
+
+## Quick start
+
+**Requirements:** Python **3.11 or newer**, and an API key for at least one provider (Google Gemini, Groq, OpenAI, DeepSeek, OpenRouter, or a custom OpenAI-compatible endpoint).
 
 ```bash
+git clone https://github.com/noobiesss/ChatPPT_v2.git
+cd ChatPPT_v2
+
+python -m venv .venv
+# Windows:      .venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
+
 pip install -r requirements.txt
+streamlit run app.py
+```
+
+The app opens at http://localhost:8501. Click **Settings** in the sidebar, choose a provider, paste your API key and pick a model.
+
+Optional:
+- **Unsplash access key** (Settings → Images) for stock photos. Without it, image slides use AI images or placeholders.
+- **Google Imagen 3** for AI images needs a Google Gemini key with Imagen access.
+
+---
+
+## Deploy on Streamlit Community Cloud
+
+1. Fork or push this repository to your GitHub account.
+2. On [share.streamlit.io](https://share.streamlit.io), click **Create app** and choose:
+   - **Repository:** your copy of `ChatPPT_v2`
+   - **Branch:** `ChatPPT_main`
+   - **Main file path:** `app.py`
+3. Under **Advanced settings**, pick **Python 3.12** (3.11 or newer is required).
+4. Click **Deploy**. Users enter their own API keys in the app, so no secrets are needed.
+
+Notes:
+- Every push to the branch updates the app automatically. If a push adds new imports and the app shows an `ImportError`, open **Manage app → ⋮ → Reboot app**.
+- The repository, branch and main file of a deployed app are fixed. If you rename the branch, delete the app and deploy it again (you can reuse the same app URL).
+- The upload limit is 50 MB (`.streamlit/config.toml`).
+
+---
+
+## How to use
+
+1. **Add your source:** attach a PDF, DOCX, TXT or MD file (**Attach** button) or paste text into the message box. Set the slide count, language and tone with the **"8 slides"** button, and the color palette or your own `.pptx` template with the **palette** button next to it.
+2. **Send.** ChatPPT designs the outline, which appears below the chat.
+3. **Refine:**
+   - ask questions or request changes in the chat ("make slide 5 shorter", "add a thank-you slide");
+   - or open a slide in the outline to edit it directly; the preview shows the result live.
+   - Use **Undo** if you don't like a change.
+4. **Render presentation (.pptx)** and download the file. Everything in it is editable in PowerPoint.
+5. Optional: **Save project** to continue later with **Open project**.
+
+---
+
+## Slide layouts
+
+| Layout | What it looks like | Best for |
+| :--- | :--- | :--- |
+| `cover` | Large title, accent bar, subtitle | Opening slide (always slide 1) |
+| `section_divider` | Contrasting background with section title and overview | Transitions in decks of 8+ slides |
+| `bullet_cards` | 3–4 stacked cards with numbered badges | Sequential explanations, general takeaways |
+| `three_cards` | 3 parallel pillar cards | Three pillars, modules or recommendations |
+| `two_column` | Two side-by-side columns with colored headers | Pros vs. cons, before vs. after, problem vs. solution |
+| `kpi_metrics` | 2–4 big-number cards with label and context | Headline figures, growth, ROI, benchmarks |
+| `chart_slide` | Native editable chart + 2–3 insight cards | Trends, comparisons, shares |
+| `image_split` | Image with caption + 2–3 key points | Products, operations, workflows, scenarios |
+| `timeline_flow` | 2–5 numbered steps on a line with stage labels and step cards | Roadmaps, phased plans, processes |
+| `comparison_table` | Native editable table (up to 5 columns × 6 rows) | Options, vendors or scenarios across several criteria |
+| `closing` | Large centered phrase + optional presenter line | Thank-you / Q&A slide, only when you ask for it |
+
+---
+
+## Project structure
+
+```text
+app.py                  Streamlit entry point
+assets/                 Logo files
+chatppt/                Core package (no UI code)
+  schemas.py            Slide outline data model (Pydantic)
+  prompts.py            Instructions for the AI (layout rules, Q&A routing)
+  outline.py            Outline generation, targeted slide patches, validation
+  chat_assistant.py     Question / patch / revise routing
+  retrieval.py          BM25 retrieval over long documents
+  llm_client.py         Provider calls, JSON repair, token-limit handling
+  pptx_*.py             Rendering: layouts, custom templates, deck assembly
+  images.py             Unsplash, AI images, report figures
+  deck_ops.py           Undo / redo and slide move / insert / delete
+  project_io.py         Save / open project files
+  prefs.py              Settings and keys remembered in the browser
+  preview.py            HTML wireframe preview and overflow estimate
+  ui/                   Streamlit UI (sidebar, composer, editor, settings, ...)
+smoke_test.py           Offline test suite (no API keys, no network)
+project_state.md        Detailed developer notes and file map
+```
+
+---
+
+## Development and tests
+
+Run the offline smoke test after every change. It needs no API keys and no network:
+
+```bash
+python smoke_test.py
+```
+
+It builds a deck with all 11 layouts, checks custom-template inheritance, and covers routing, retrieval, targeted patches, token-limit handling, undo/redo, project files, slide moves, previews and browser preferences.
+
+`project_state.md` documents the architecture, the file map ("which file to edit for which task") and known constraints.
+
+**Tech stack:** [Streamlit](https://streamlit.io/) (≥ 1.57), [Pydantic v2](https://docs.pydantic.dev/), [python-pptx](https://python-pptx.readthedocs.io/), [Google GenAI SDK](https://pypi.org/project/google-genai/), `pypdf`, `python-docx`, `Pillow`. OpenAI-compatible providers are called with the standard library (`urllib`), with no extra SDKs.

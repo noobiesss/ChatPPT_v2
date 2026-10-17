@@ -88,7 +88,8 @@ def _load_images(raw_images) -> List[Dict[str, object]]:
     return images
 
 
-def _load_settings(raw: dict) -> dict:
+def load_safe_settings(raw: dict) -> dict:
+    """Keep only known, non-secret settings with valid values (shared with browser prefs)."""
     out = {}
     if raw.get("provider") in LLM_PROVIDERS:
         out["provider"] = raw["provider"]
@@ -103,7 +104,8 @@ def _load_settings(raw: dict) -> dict:
     return out
 
 
-def _load_options(raw: dict) -> dict:
+def load_options(raw: dict) -> dict:
+    """Keep only known composer options with valid values (shared with browser prefs)."""
     out = {}
     if isinstance(raw.get("opt_slides"), int):
         out["opt_slides"] = max(MIN_SLIDES, min(MAX_SLIDES, raw["opt_slides"]))
@@ -136,6 +138,6 @@ def load_project(raw_bytes: bytes) -> dict:
         "source_text": str(raw_chat.get("source_text") or ""),
         "report_images": _load_images(raw_chat.get("report_images")),
     }
-    settings = _load_settings(data.get("settings") if isinstance(data.get("settings"), dict) else {})
-    options = _load_options(data.get("options") if isinstance(data.get("options"), dict) else {})
+    settings = load_safe_settings(data.get("settings") if isinstance(data.get("settings"), dict) else {})
+    options = load_options(data.get("options") if isinstance(data.get("options"), dict) else {})
     return {"chat": chat, "settings": settings, "options": options}
