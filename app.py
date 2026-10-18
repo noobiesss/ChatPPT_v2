@@ -10,7 +10,7 @@ from chatppt.ui.browser_chats import sync_browser_chats
 from chatppt.ui.common import LOGO_ICON_PATH
 from chatppt.ui.composer import render_composer
 from chatppt.ui.css import inject_css
-from chatppt.ui.export import render_deck_block
+from chatppt.ui.export import render_deck_block, render_deck_placeholder
 from chatppt.ui.generation import run_pending
 from chatppt.ui.messages import render_hero, render_messages
 from chatppt.ui.sidebar import render_sidebar
@@ -33,9 +33,11 @@ def main():
     with chat_area:
         if not chat["messages"] and chat["pending"] is None:
             render_hero()
-        render_messages(chat)
-        if chat["slides"] and chat["pending"] is None:
-            render_deck_block(chat)
+        # The outline sits after the message that last changed the deck (not re-appended after every answer)
+        deck = None
+        if chat["slides"]:
+            deck = (lambda: render_deck_block(chat)) if chat["pending"] is None else (lambda: render_deck_placeholder(chat))
+        render_messages(chat, deck)
 
     render_composer(chat)
 

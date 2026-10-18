@@ -1,10 +1,11 @@
-"""Hero (empty state) and chat message rendering.
+"""Hero (empty state) and chat message rendering, with the outline block anchored in the conversation.
 
-Edit when: changing the welcome screen or how chat messages look.
+Edit when: changing the welcome screen, how chat messages look, or where the outline block appears.
 """
 
 import base64
 from functools import lru_cache
+from typing import Callable, List, Optional
 
 import streamlit as st
 
@@ -35,8 +36,39 @@ def render_hero() -> None:
     )
 
 
-def render_messages(chat: dict) -> None:
-    for m in chat["messages"]:
+# Content prefixes of assistant messages written before messages carried a "kind"
+_DECK_PREFIXES = ("Your outline is ready", "Updated **slide")
+
+
+def message_kind(message: dict) -> str:
+    """'deck' (the outline was created or changed), 'answer', 'error', or 'user'."""
+    if message.get("role") != "assistant":
+        return "user"
+    if message.get("kind") in ("deck", "answer", "error"):
+        return message["kind"]
+    content = str(message.get("content") or "")
+    if content.startswith(_DECK_PREFIXES):
+        return "deck"
+    if "Answer" in str(message.get("meta") or ""):
+        return "answer"
+    return "error"
+
+
+def deck_anchor(messages: List[dict]) -> Optional[int]:
+    """Index of the message the outline block follows: the last one that changed the deck (None = at the end)."""
+    for i in range(len(messages) - 1, -1, -1):
+        if message_kind(messages[i]) == "deck":
+            return i
+    return None
+
+
+def render_messages(chat: dict, render_deck: Optional[Callable[[], None]] = None) -> None:
+    """
+    Render the conversation. `render_deck` draws the outline block right after the message that last changed
+    the deck, so answering a question or a failed request never moves (or seems to re-send) the outline.
+    """
+    anchor = deck_anchor(chat["messages"]) if render_deck else None
+    for i, m in enumerate(chat["messages"]):
         is_user = m["role"] == "user"
         with st.chat_message(m["role"], avatar=None if is_user else ASSISTANT_AVATAR):
             if m.get("attachment"):
@@ -45,3 +77,7 @@ def render_messages(chat: dict) -> None:
                 st.markdown(m["content"])
             if m.get("meta"):
                 st.caption(m["meta"])
+        if render_deck and i == anchor:
+            render_deck()
+    if render_deck and anchor is None:
+        render_deck()

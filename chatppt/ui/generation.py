@@ -176,6 +176,7 @@ def _run_patch(chat: dict, p: dict, targets: list) -> bool:
             "role": "assistant",
             "content": f"Updated **{label}**; all other slides are unchanged. Review it below, then render the .pptx.",
             "meta": f"{EDIT_MARK} Targeted edit",
+            "kind": "deck",  # the outline is shown right after the last "deck" message
         }
     )
     return True
@@ -205,6 +206,7 @@ def run_pending(chat: dict, container) -> None:
                             "role": "assistant",
                             "content": decision.reply,
                             "meta": ":material/chat: Answer · outline unchanged" if chat["slides"] else ":material/chat: Answer",
+                            "kind": "answer",
                         }
                     )
                     chat["pending"] = None
@@ -244,16 +246,18 @@ def run_pending(chat: dict, container) -> None:
                             "role": "assistant",
                             "content": f"Your outline is ready — **{len(slides)} slides**.{note} "
                             "Review and tweak it below, then render the .pptx.",
+                            "kind": "deck",
                         }
                     )
                 except TokenBudgetError as e:
                     # Readable explanation (plan limit vs. request size) instead of the raw HTTP body
-                    chat["messages"].append({"role": "assistant", "content": f":material/warning: {e}"})
+                    chat["messages"].append({"role": "assistant", "content": f":material/warning: {e}", "kind": "error"})
                 except Exception as e:  # noqa: BLE001
                     err = str(e)
                     err = err if len(err) <= 1200 else err[:1200] + "…"
                     chat["messages"].append(
-                        {"role": "assistant", "content": f":material/error: I couldn't generate the outline.\n\n```\n{err}\n```"}
+                        {"role": "assistant", "content": f":material/error: I couldn't generate the outline.\n\n```\n{err}\n```",
+                         "kind": "error"}
                     )
                 chat["pending"] = None
     st.rerun()

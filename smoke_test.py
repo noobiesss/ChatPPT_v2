@@ -450,6 +450,30 @@ def check_chat_store() -> None:
     print("[ok] chat store: 3-part round trip, per-part change detection, size cap, broken records skipped")
 
 
+def check_outline_anchor() -> None:
+    from chatppt.project_io import export_project, load_project
+    from chatppt.ui.messages import deck_anchor, message_kind
+
+    deck_msg = {"role": "assistant", "content": "Your outline is ready — 9 slides.", "kind": "deck"}
+    answer = {"role": "assistant", "content": "Because it compares two options.", "kind": "answer"}
+    error = {"role": "assistant", "content": ":material/error: I couldn't generate the outline.", "kind": "error"}
+    user = {"role": "user", "content": "why?"}
+    # Questions and failed requests after the deck never move the outline
+    assert deck_anchor([user, deck_msg, user, answer, user, error]) == 1
+    patched = {"role": "assistant", "content": "Updated **slide 3**; all other slides are unchanged.", "kind": "deck"}
+    assert deck_anchor([user, deck_msg, user, answer, user, patched, user, answer]) == 5
+    assert deck_anchor([user, answer]) is None  # no deck message (e.g. an old project) -> outline at the end
+    # Messages saved before "kind" existed are recognized by their text
+    assert message_kind({"role": "assistant", "content": "Your outline is ready — **8 slides**."}) == "deck"
+    assert message_kind({"role": "assistant", "content": "Updated **slides 2, 5**; all other slides..."}) == "deck"
+    assert message_kind({"role": "assistant", "content": "It means...", "meta": "💬 Answer · outline unchanged"}) == "answer"
+    assert message_kind({"role": "assistant", "content": "❌ I couldn't generate the outline."}) == "error"
+    # The kind survives a project round trip
+    raw = export_project({"title": "t", "slides": sample_slides(), "messages": [user, deck_msg, user, answer]}, {}, {})
+    assert [m.get("kind") for m in load_project(raw)["chat"]["messages"]] == [None, "deck", None, "answer"]
+    print("[ok] outline anchor: stays after the last deck change; questions/errors don't move it; legacy messages")
+
+
 def check_token_limits() -> None:
     import json
     import urllib.error
@@ -510,7 +534,7 @@ if __name__ == "__main__":
     for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide,
                check_new_layouts, check_report_images, check_assistant, check_retrieval, check_patch, check_token_limits,
                check_history_and_projects, check_structure_ops, check_preview,
-               check_browser_prefs, check_chat_store):
+               check_browser_prefs, check_chat_store, check_outline_anchor):
         fn()
     print("ALL SMOKE TESTS PASSED")
     sys.exit(0)

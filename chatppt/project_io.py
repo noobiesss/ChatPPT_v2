@@ -20,7 +20,7 @@ PROJECT_VERSION = 1
 SAFE_SETTING_KEYS = ("provider", "models", "custom_base_url", "image_mode", "use_imagen", "remember_chats")
 # Composer options restored on load (template mode is not: the .pptx template itself is not saved)
 OPTION_KEYS = ("opt_slides", "opt_language", "opt_tone", "opt_theme")
-_MESSAGE_KEYS = ("role", "content", "meta", "attachment")
+_MESSAGE_KEYS = ("role", "content", "meta", "attachment", "kind")
 
 
 class ProjectFileError(ValueError):

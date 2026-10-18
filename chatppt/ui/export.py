@@ -114,6 +114,15 @@ def _safe_filename(title: Optional[str]) -> str:
     return cleaned[:40] or "ChatPPT_project"
 
 
+def render_deck_placeholder(chat: dict) -> None:
+    """Shown in place of the outline while a message is being processed: same spot, no widgets.
+    (Clicking an editor widget now would rerun the app and interrupt, then repeat, the running AI call.)"""
+    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+        with st.container(border=True):
+            st.markdown(f"**Slide outline** · {len(chat['slides'])} slides")
+            st.caption(":material/hourglass_top: Editing is paused while I work on your message.")
+
+
 def render_deck_block(chat: dict) -> None:
     with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
         st.markdown("**Slide outline** — expand any slide to edit it, then render the deck.")
