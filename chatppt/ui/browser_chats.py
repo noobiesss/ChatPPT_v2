@@ -8,8 +8,10 @@ Flow per browser session:
 2. `_on_loaded` (a callback, before any widget exists) restores the chats; the untouched empty chat that
    was created at startup is replaced and the most recent restored chat is opened.
 3. Later runs: for the active chat, each part ("chat", "source", "images") is fingerprinted; changed parts
-   become queued writes. The queue (latest write per record) is re-sent every run until the browser
-   acknowledges the version (state "acked"), so no write is lost if a rerun interrupts a render.
+   become versioned writes (latest write per record). The browser applies them in the background and does
+   NOT report back, because any value sent up from a component costs a full app rerun. Instead each write is
+   re-sent for RESEND_RUNS runs (the browser skips versions it already applied), so a rerun that interrupts
+   a render cannot lose it, and the browser drains writes that arrive while it is busy.
 Nothing is written before step 2, and nothing at all while "Keep my chats on this browser" is off.
 """
 
@@ -21,6 +23,8 @@ from chatppt.chat_store import MAX_STORED_CHATS, PARTS, is_storable, part_payloa
 from chatppt.ui.state import create_chat, new_chat
 
 COMPONENT_KEY = "browser_chats"
+# A queued write is included in this many runs (its own + the next ones) before it is dropped from the queue
+RESEND_RUNS = 3
 
 _JS = """
 const DB_NAME = "chatppt";
@@ -73,13 +77,40 @@ function applyOps(db, ops) {
   });
 }
 
+// Writes are applied in the background without telling Python (that would cost a full app rerun per save).
+// The newest ops seen are kept per session; after each batch the loop checks for ops that arrived meanwhile.
+function drain(session, setStateValue) {
+  const applied = window.__chatpptChatsApplied;
+  const busy = window.__chatpptChatsBusy;
+  if (busy[session]) return;
+  const pending = (window.__chatpptChatsLatest[session] || [])
+    .filter((op) => op.version > (applied[session] || 0))
+    .sort((a, b) => a.version - b.version);
+  if (!pending.length) return;
+  busy[session] = true;
+  const top = Math.max.apply(null, pending.map((op) => op.version));
+  openDb()
+    .then((db) => applyOps(db, pending))
+    .then(() => {
+      applied[session] = Math.max(applied[session] || 0, top);
+      // Written ops (which may hold large source text / figures) are released
+      window.__chatpptChatsLatest[session] = window.__chatpptChatsLatest[session].filter((op) => op.version > applied[session]);
+    })
+    .catch((e) => setStateValue("save_error", String(e)))
+    .finally(() => {
+      busy[session] = false;
+      drain(session, setStateValue);
+    });
+}
+
 export default function (component) {
   const { data, setStateValue } = component;
   if (!data) return;
   // Per browser-session bookkeeping on window (the component is not iframed, so window is the app page)
   const loaded = (window.__chatpptChatsLoaded = window.__chatpptChatsLoaded || {});
-  const applied = (window.__chatpptChatsApplied = window.__chatpptChatsApplied || {});
-  const busy = (window.__chatpptChatsBusy = window.__chatpptChatsBusy || {});
+  window.__chatpptChatsApplied = window.__chatpptChatsApplied || {};
+  window.__chatpptChatsBusy = window.__chatpptChatsBusy || {};
+  const latest = (window.__chatpptChatsLatest = window.__chatpptChatsLatest || {});
   const session = data.session || "default";
 
   if (data.need_load && !loaded[session]) {
@@ -90,21 +121,12 @@ export default function (component) {
       .catch((e) => setStateValue("loaded", { records: {}, error: String(e) }));
   }
 
-  const pending = (data.ops || []).filter((op) => op.version > (applied[session] || 0));
-  if (pending.length && !busy[session]) {
-    busy[session] = true;
-    const top = Math.max.apply(null, pending.map((op) => op.version));
-    openDb()
-      .then((db) => applyOps(db, pending))
-      .then(() => {
-        applied[session] = top;
-        setStateValue("acked", top);
-      })
-      .catch((e) => setStateValue("save_error", String(e)))
-      .finally(() => {
-        busy[session] = false;
-      });
-  }
+  // Merge, never replace: an op dropped from Python's resend window must still be written if it was not yet
+  const known = latest[session] || [];
+  const seen = new Set(known.map((op) => op.version));
+  const done = window.__chatpptChatsApplied[session] || 0;
+  latest[session] = known.concat((data.ops || []).filter((op) => op.version > done && !seen.has(op.version)));
+  drain(session, setStateValue);
 }
 """
 
@@ -151,9 +173,10 @@ def erase_browser_chats() -> None:
 
 
 def _queue(ops: list, op: dict, version: int) -> int:
-    """Queue an op with the next version; an unsent older write of the same record is superseded."""
+    """Queue an op with the next version; an older queued write of the same record is superseded."""
     version += 1
     op["version"] = version
+    op["runs_left"] = RESEND_RUNS
     if op["op"] == "clear":
         ops.clear()
     else:
@@ -165,8 +188,7 @@ def _queue(ops: list, op: dict, version: int) -> int:
 def sync_browser_chats() -> None:
     """Mount the invisible bridge (every run): restore once, then save the active chat when it changed."""
     ss = st.session_state
-    acked = _state().get("acked") or 0
-    ops = [o for o in ss.get("_chatdb_ops", []) if o["version"] > acked]
+    ops = list(ss.get("_chatdb_ops", []))
     version = ss.get("_chatdb_version", 0)
     sigs = ss.setdefault("_chatdb_sigs", {})
 
@@ -194,13 +216,17 @@ def sync_browser_chats() -> None:
                 version = _queue(ops, {"op": "delete_chat", "id": cid}, version)
                 del sigs[cid]
 
-    ss["_chatdb_ops"], ss["_chatdb_version"] = ops, version
-    data = {"session": ss["_session_nonce"], "need_load": not ss.get("_chatdb_loaded"), "ops": ops}
+    data = {"session": ss["_session_nonce"], "need_load": not ss.get("_chatdb_loaded"),
+            "ops": [{k: v for k, v in o.items() if k != "runs_left"} for o in ops]}
     _BROWSER_CHATS(
         key=COMPONENT_KEY,
         data=data,
         on_loaded_change=_on_loaded,
-        on_acked_change=lambda: None,
         on_save_error_change=lambda: None,
         height="content",
     )
+    # Each write rides along with RESEND_RUNS runs, then leaves the queue (the browser keeps it until written)
+    for op in ops:
+        op["runs_left"] -= 1
+    ss["_chatdb_ops"] = [o for o in ops if o["runs_left"] > 0]
+    ss["_chatdb_version"] = version

@@ -6,6 +6,7 @@ Edit when: changing the overall page flow.
 
 import streamlit as st
 
+from chatppt.ui.browser_chats import sync_browser_chats
 from chatppt.ui.common import LOGO_ICON_PATH
 from chatppt.ui.composer import render_composer
 from chatppt.ui.css import inject_css
@@ -37,6 +38,10 @@ def main():
             render_deck_block(chat)
 
     render_composer(chat)
+
+    # Saves chats to this browser. Must run AFTER the outline editor and the composer, so an edit made in
+    # this run is already in the chat when it is fingerprinted (in the sidebar it would see the old data)
+    sync_browser_chats()
 
     if chat["pending"] is not None:
         run_pending(chat, chat_area)
