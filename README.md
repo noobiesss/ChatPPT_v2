@@ -57,6 +57,7 @@ Three modes, chosen globally in Settings or per slide:
 - **Your own `.pptx` template:** ChatPPT inherits its backgrounds, theme colors and fonts and scales non-16:9 templates to widescreen. Decorations on the template's sample slides and layouts are removed so they never collide with generated content.
 
 ### Save and resume
+- **Your chats come back when you reopen the app.** Conversations, outlines, source text and report figures are kept in your own browser (IndexedDB) and the most recent chat opens automatically. The 30 most recent chats are kept; you can turn this off in Settings.
 - **Settings are remembered in your browser** (provider, models, image mode, theme, slide count, language, tone), and so are your API keys unless you turn that off. See [Privacy and your API keys](#privacy-and-your-api-keys).
 - **Save project** downloads a `.chatppt.json` file with the outline, conversation, source text and report figures. **Open project** in the sidebar restores it after a page refresh, on another computer, or for a colleague. Project files never contain API keys.
 
@@ -77,14 +78,15 @@ ChatPPT is a "bring your own key" app. Here is exactly what happens to your key:
 | Where is my key sent? | To the app's server while you use it, because the server makes the call to the AI provider. It is held in memory for your session only and sent **only to the provider you selected** (and to Unsplash / Google Imagen for images, if you use them). |
 | Is it logged? | No. The code never prints, logs or displays keys. |
 | Can other users see my key? | No. Every browser session is separate. |
+| Where are my chats and uploaded reports kept? | In your own browser (IndexedDB), only if "Keep my chats on this browser" is on. They are not stored on the server and not shared with anyone. Anyone using the same browser profile on that computer can open them. |
 | Is it in saved projects? | No. `.chatppt.json` project files never contain API keys. |
-| How do I remove it? | Settings → section 3 → **Forget this browser** erases everything saved in that browser. Unticking "Remember my API keys" and pressing **Save** removes only the keys. |
+| How do I remove it? | Settings → section 3 → **Forget this browser** erases everything saved in that browser (settings, keys and chats). Unticking "Remember my API keys" or "Keep my chats" and pressing **Save** removes only the keys or only the chats. |
 
 **Please keep in mind:**
 
 - As with every bring-your-own-key web app, you are trusting whoever runs the server, because the key passes through it. This repository is public, so you can check the code yourself; if you prefer, run ChatPPT locally (see [Quick start](#quick-start)).
 - Protect yourself on the provider's side: create a **separate key** just for ChatPPT and set a **spending limit**, so you can revoke it at any time.
-- On a **shared or public computer**, untick "Remember my API keys" or click **Forget this browser** when you are done.
+- On a **shared or public computer**, untick "Remember my API keys" and "Keep my chats", or click **Forget this browser** when you are done.
 
 ---
 
@@ -177,6 +179,7 @@ chatppt/                Core package (no UI code)
   deck_ops.py           Undo / redo and slide move / insert / delete
   project_io.py         Save / open project files
   prefs.py              Settings and keys remembered in the browser
+  chat_store.py         Chats kept in the browser (record layout, validation)
   preview.py            HTML wireframe preview and overflow estimate
   ui/                   Streamlit UI (sidebar, composer, editor, settings, ...)
 smoke_test.py           Offline test suite (no API keys, no network)
@@ -193,7 +196,7 @@ Run the offline smoke test after every change. It needs no API keys and no netwo
 python smoke_test.py
 ```
 
-It builds a deck with all 11 layouts, checks custom-template inheritance, and covers routing, retrieval, targeted patches, token-limit handling, undo/redo, project files, slide moves, previews and browser preferences.
+It builds a deck with all 11 layouts, checks custom-template inheritance, and covers routing, retrieval, targeted patches, token-limit handling, undo/redo, project files, slide moves, previews, browser preferences and the browser chat store.
 
 `project_state.md` documents the architecture, the file map ("which file to edit for which task") and known constraints.
 

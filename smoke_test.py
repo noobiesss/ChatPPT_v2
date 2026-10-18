@@ -414,6 +414,42 @@ def check_browser_prefs() -> None:
     print("[ok] browser prefs: round trip, stable payload, no keys when off, hostile payload sanitized")
 
 
+def check_chat_store() -> None:
+    import copy
+
+    import chatppt.chat_store as cs
+
+    chat = {"id": "abc123", "title": "Q3 review", "messages": [{"role": "user", "content": "make a deck"}],
+            "slides": copy.deepcopy(sample_slides()), "source_text": "SOURCE " * 100, "pending": None, "updated_at": 5.0,
+            "report_images": [{"name": "fig", "width": 400, "height": 300, "bytes": b"\x89PNGdata"}]}
+    records = {cs.record_key(chat["id"], p): cs.part_payload(chat, p) for p in cs.PARTS}
+    back = cs.restore_chats(records)[0]
+    assert back["id"] == "abc123" and back["title"] == "Q3 review" and back["source_text"] == chat["source_text"]
+    assert [s["action_title"] for s in back["slides"]] == [s["action_title"] for s in chat["slides"]]
+    assert back["report_images"][0]["bytes"] == b"\x89PNGdata" and back["updated_at"] == 5.0
+    # Only the part that changed gets a new fingerprint (a slide edit never re-sends source or figures)
+    before = {p: cs.part_signature(chat, p) for p in cs.PARTS}
+    chat["slides"][2]["action_title"] = "Edited"
+    after = {p: cs.part_signature(chat, p) for p in cs.PARTS}
+    assert after["chat"] != before["chat"] and after["source"] == before["source"] and after["images"] == before["images"]
+    # Oversized figures are not kept in the browser (the chat still is)
+    big = dict(chat, report_images=[{"name": "huge", "bytes": b"x" * (cs.MAX_IMAGES_BYTES + 1)}])
+    assert '"report_images":[]' in cs.part_payload(big, "images")
+    # Broken records are skipped; newest first; capped
+    records["zzz/chat"] = "not json"
+    records["bad/chat"] = '{"v": 1, "messages": [], "slides": [{"layout_type": "bogus"}]}'
+    many = dict(records)
+    for i in range(cs.MAX_STORED_CHATS + 3):
+        many[f"c{i}/chat"] = cs.part_payload({"title": f"T{i}", "messages": [{"role": "user", "content": "x"}],
+                                              "slides": [], "updated_at": float(i)}, "chat")
+    restored = cs.restore_chats(many)
+    assert len(restored) == cs.MAX_STORED_CHATS and restored[0]["title"] == f"T{cs.MAX_STORED_CHATS + 2}"
+    assert all(c["id"] not in ("zzz", "bad") for c in restored)
+    assert not cs.is_storable({"messages": [], "slides": None, "pending": None})
+    assert not cs.is_storable({"messages": [{"role": "user", "content": "x"}], "pending": {"job": 1}})
+    print("[ok] chat store: 3-part round trip, per-part change detection, size cap, broken records skipped")
+
+
 def check_token_limits() -> None:
     import json
     import urllib.error
@@ -474,7 +510,7 @@ if __name__ == "__main__":
     for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide,
                check_new_layouts, check_report_images, check_assistant, check_retrieval, check_patch, check_token_limits,
                check_history_and_projects, check_structure_ops, check_preview,
-               check_browser_prefs):
+               check_browser_prefs, check_chat_store):
         fn()
     print("ALL SMOKE TESTS PASSED")
     sys.exit(0)

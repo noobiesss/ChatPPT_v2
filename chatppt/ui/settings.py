@@ -12,6 +12,7 @@ from chatppt.images import _clean_unsplash_key
 from chatppt.llm_client import fetch_live_models, resolve_model_options
 from chatppt.presets import CUSTOM_PROVIDER, LLM_PROVIDERS
 from chatppt.schemas import IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST
+from chatppt.ui.browser_chats import erase_browser_chats
 from chatppt.ui.browser_prefs import forget_browser_prefs, resume_browser_prefs
 from chatppt.ui.common import IMAGE_MODE_HELP, IMAGE_MODE_LABELS
 
@@ -39,8 +40,8 @@ def settings_dialog() -> None:
     providers = list(LLM_PROVIDERS.keys())
 
     st.caption(
-        "Nothing is stored on the server. Your settings, and your API keys if you allow it in section 3, "
-        "are remembered in this browser only."
+        "Nothing is stored on the server. Your settings, and your API keys and chats if you allow it in "
+        "section 3, are remembered in this browser only."
     )
 
     # --- 1. Provider -> API key -> model ---
@@ -145,6 +146,13 @@ def settings_dialog() -> None:
         help="Keys are saved in this browser's local storage, not on the server, and are only sent to the AI / "
         "image provider you use. Turn this off on a shared or public computer.",
     )
+    remember_chats = st.checkbox(
+        "Keep my chats on this browser",
+        value=s.get("remember_chats", True),
+        key="set_remember_chats",
+        help="Chats (conversation, outline, source text and report figures) are saved in this browser's own "
+        "storage and reopened automatically next time. Turning this off erases the saved chats.",
+    )
     st.caption(
         "Provider, models, image mode, theme, slide count, language and tone are always remembered on this "
         "browser, so a page refresh keeps them."
@@ -153,10 +161,12 @@ def settings_dialog() -> None:
         st.warning("This browser blocks local storage, so settings are forgotten when the page reloads.",
                    icon=":material/warning:")
     if st.button("Forget this browser", icon=":material/delete_forever:", key="settings_forget",
-                 help="Erase the settings and API keys saved in this browser and stop remembering until you Save again."):
+                 help="Erase the settings, API keys and chats saved in this browser and stop remembering until you Save again."):
         forget_browser_prefs()
+        erase_browser_chats()
+        s["remember_chats"] = False
         ss.pop("_settings_draft", None)
-        st.toast("Erased from this browser. Keys stay in this tab until you close or refresh it.",
+        st.toast("Erased from this browser. Keys and chats stay in this tab until you close or refresh it.",
                  icon=":material/delete_forever:")
         st.rerun()
 
@@ -180,6 +190,9 @@ def settings_dialog() -> None:
         s["unsplash_key"] = _clean_unsplash_key(unsplash_key)
         s["use_imagen"] = use_imagen
         s["remember_keys"] = remember_keys
+        if s.get("remember_chats", True) and not remember_chats:
+            erase_browser_chats()
+        s["remember_chats"] = remember_chats
         resume_browser_prefs()
         # Apply updated global image mode to existing slides in open chats
         if image_mode != prev_image_mode:

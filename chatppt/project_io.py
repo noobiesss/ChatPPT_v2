@@ -17,7 +17,7 @@ from chatppt.schemas import IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST, Slide
 PROJECT_FORMAT = "chatppt-project"
 PROJECT_VERSION = 1
 # Settings that are safe to share; API keys / the Unsplash key are deliberately absent
-SAFE_SETTING_KEYS = ("provider", "models", "custom_base_url", "image_mode", "use_imagen")
+SAFE_SETTING_KEYS = ("provider", "models", "custom_base_url", "image_mode", "use_imagen", "remember_chats")
 # Composer options restored on load (template mode is not: the .pptx template itself is not saved)
 OPTION_KEYS = ("opt_slides", "opt_language", "opt_tone", "opt_theme")
 _MESSAGE_KEYS = ("role", "content", "meta", "attachment")
@@ -27,23 +27,31 @@ class ProjectFileError(ValueError):
     """The uploaded file is not a usable ChatPPT project. The message is user-facing."""
 
 
-def export_project(chat: dict, settings: dict, options: dict) -> bytes:
-    """Serialize one chat and the non-secret settings as UTF-8 JSON bytes."""
-    images = [
+def encode_images(images: List[Dict[str, object]]) -> List[dict]:
+    """Report figures as JSON-safe dicts (base64 data)."""
+    return [
         {"name": im.get("name", ""), "width": im.get("width"), "height": im.get("height"),
          "data": base64.b64encode(im["bytes"]).decode("ascii")}
-        for im in chat.get("report_images") or [] if im.get("bytes")
+        for im in images or [] if im.get("bytes")
     ]
+
+
+def encode_messages(messages: List[dict]) -> List[dict]:
+    return [{k: m[k] for k in _MESSAGE_KEYS if m.get(k) is not None} for m in messages or []]
+
+
+def export_project(chat: dict, settings: dict, options: dict) -> bytes:
+    """Serialize one chat and the non-secret settings as UTF-8 JSON bytes."""
     data = {
         "format": PROJECT_FORMAT,
         "version": PROJECT_VERSION,
         "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "chat": {
             "title": chat.get("title", ""),
-            "messages": [{k: m[k] for k in _MESSAGE_KEYS if m.get(k) is not None} for m in chat.get("messages") or []],
+            "messages": encode_messages(chat.get("messages")),
             "slides": chat.get("slides") or [],
             "source_text": chat.get("source_text", ""),
-            "report_images": images,
+            "report_images": encode_images(chat.get("report_images")),
         },
         "settings": {k: settings[k] for k in SAFE_SETTING_KEYS if k in settings},
         "options": {k: options[k] for k in OPTION_KEYS if options.get(k) is not None},
@@ -51,7 +59,7 @@ def export_project(chat: dict, settings: dict, options: dict) -> bytes:
     return json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")
 
 
-def _load_slides(raw_slides) -> List[dict]:
+def load_slides(raw_slides) -> List[dict]:
     if not isinstance(raw_slides, list):
         raise ProjectFileError("The project has no slide list.")
     slides = []
@@ -69,7 +77,7 @@ def _load_slides(raw_slides) -> List[dict]:
     return slides
 
 
-def _load_messages(raw_messages) -> List[dict]:
+def load_messages(raw_messages) -> List[dict]:
     messages = []
     for m in raw_messages if isinstance(raw_messages, list) else []:
         if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content", ""), str):
@@ -77,7 +85,7 @@ def _load_messages(raw_messages) -> List[dict]:
     return messages
 
 
-def _load_images(raw_images) -> List[Dict[str, object]]:
+def decode_images(raw_images) -> List[Dict[str, object]]:
     images = []
     for im in raw_images if isinstance(raw_images, list) else []:
         try:
@@ -99,8 +107,9 @@ def load_safe_settings(raw: dict) -> dict:
         out["custom_base_url"] = raw["custom_base_url"]
     if raw.get("image_mode") in IMAGE_MODE_OPTIONS:
         out["image_mode"] = raw["image_mode"]
-    if isinstance(raw.get("use_imagen"), bool):
-        out["use_imagen"] = raw["use_imagen"]
+    for flag in ("use_imagen", "remember_chats"):
+        if isinstance(raw.get(flag), bool):
+            out[flag] = raw[flag]
     return out
 
 
@@ -130,13 +139,13 @@ def load_project(raw_bytes: bytes) -> dict:
     if not isinstance(data.get("version"), int) or data["version"] > PROJECT_VERSION:
         raise ProjectFileError("This project was saved by a newer version of ChatPPT.")
     raw_chat = data.get("chat") if isinstance(data.get("chat"), dict) else {}
-    slides = _load_slides(raw_chat.get("slides"))
+    slides = load_slides(raw_chat.get("slides"))
     chat = {
         "title": str(raw_chat.get("title") or "Restored project")[:40],
-        "messages": _load_messages(raw_chat.get("messages")),
+        "messages": load_messages(raw_chat.get("messages")),
         "slides": slides or None,
         "source_text": str(raw_chat.get("source_text") or ""),
-        "report_images": _load_images(raw_chat.get("report_images")),
+        "report_images": decode_images(raw_chat.get("report_images")),
     }
     settings = load_safe_settings(data.get("settings") if isinstance(data.get("settings"), dict) else {})
     options = load_options(data.get("options") if isinstance(data.get("options"), dict) else {})

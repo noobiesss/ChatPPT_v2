@@ -4,6 +4,7 @@ Edit when: adding a session key, a default setting, changing chat creation/delet
 """
 
 import uuid
+from typing import Optional
 
 import streamlit as st
 
@@ -12,11 +13,10 @@ from chatppt.presets import CUSTOM_PROVIDER, LLM_PROVIDERS
 from chatppt.schemas import IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST
 
 
-def create_chat() -> None:
-    """Create a new empty chat and make it the active one."""
-    ss = st.session_state
-    cid = uuid.uuid4().hex[:8]
-    ss.chats[cid] = {
+def new_chat(cid: Optional[str] = None) -> dict:
+    """A fresh chat dict (also the base for chats restored from the browser)."""
+    cid = cid or uuid.uuid4().hex[:8]
+    return {
         "id": cid,
         "title": "New chat",
         "messages": [],
@@ -29,9 +29,17 @@ def create_chat() -> None:
         "pending": None,
         "slides_history": [],  # undo stack of outline snapshots (see chatppt/deck_ops.py)
         "slides_future": [],  # redo stack
+        "updated_at": 0.0,  # last change, for the browser chat store (chatppt/chat_store.py)
     }
-    ss.chat_order.insert(0, cid)
-    ss.active_chat = cid
+
+
+def create_chat() -> None:
+    """Create a new empty chat and make it the active one."""
+    ss = st.session_state
+    chat = new_chat()
+    ss.chats[chat["id"]] = chat
+    ss.chat_order.insert(0, chat["id"])
+    ss.active_chat = chat["id"]
 
 
 def mark_slides_changed(chat: dict) -> None:
@@ -83,10 +91,12 @@ def init_state() -> None:
             "unsplash_key": "",
             "use_imagen": False,
             "remember_keys": True,  # keep API keys in this browser (chatppt/prefs.py)
+            "remember_chats": True,  # keep chats in this browser (chatppt/chat_store.py)
         }
     ss.settings.setdefault("provider", next(iter(LLM_PROVIDERS)))
     ss.settings.setdefault("models", {})
     ss.settings.setdefault("remember_keys", True)
+    ss.settings.setdefault("remember_chats", True)
     ss.setdefault("_session_nonce", uuid.uuid4().hex)  # identifies this browser session to the prefs bridge
     if ss.settings.get("image_mode") not in IMAGE_MODE_OPTIONS:
         ss.settings["image_mode"] = IMAGE_MODE_UNSPLASH_FIRST

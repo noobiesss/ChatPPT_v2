@@ -6,6 +6,7 @@ Edit when: changing the sidebar.
 import streamlit as st
 
 from chatppt.project_io import ProjectFileError, load_project
+from chatppt.ui.browser_chats import sync_browser_chats
 from chatppt.ui.browser_prefs import sync_browser_prefs
 from chatppt.ui.common import LOGO_ICON_PATH, LOGO_PATH
 from chatppt.ui.settings import open_settings
@@ -77,5 +78,6 @@ def render_sidebar() -> None:
             if c2.button(":material/close:", key=f"del_{cid}", help="Delete chat"):
                 delete_chat(cid)
                 st.rerun()
-        # Invisible: remembers settings (and, if allowed, API keys) in this browser
+        # Invisible: remembers settings (and, if allowed, API keys and chats) in this browser
         sync_browser_prefs()
+        sync_browser_chats()
