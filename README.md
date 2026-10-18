@@ -17,7 +17,6 @@ It works with your own API key for Google Gemini, Groq, OpenAI, DeepSeek, OpenRo
 - [Features](#features)
 - [Privacy and your API keys](#privacy-and-your-api-keys)
 - [Quick start](#quick-start)
-- [Deploy on Streamlit Community Cloud](#deploy-on-streamlit-community-cloud)
 - [How to use](#how-to-use)
 - [Slide layouts](#slide-layouts)
 - [Project structure](#project-structure)
@@ -111,23 +110,6 @@ The app opens at http://localhost:8501. Click **Settings** in the sidebar, choos
 Optional:
 - **Unsplash access key** (Settings → Images) for stock photos. Without it, image slides use AI images or placeholders.
 - **Google Imagen 3** for AI images needs a Google Gemini key with Imagen access.
-
----
-
-## Deploy on Streamlit Community Cloud
-
-1. Fork or push this repository to your GitHub account.
-2. On [share.streamlit.io](https://share.streamlit.io), click **Create app** and choose:
-   - **Repository:** your copy of `ChatPPT_v2`
-   - **Branch:** `ChatPPT_main`
-   - **Main file path:** `app.py`
-3. Under **Advanced settings**, pick **Python 3.12** (3.11 or newer is required).
-4. Click **Deploy**. Users enter their own API keys in the app, so no secrets are needed.
-
-Notes:
-- Every push to the branch updates the app automatically. If a push adds new imports and the app shows an `ImportError`, open **Manage app → ⋮ → Reboot app**.
-- The repository, branch and main file of a deployed app are fixed. If you rename the branch, delete the app and deploy it again (you can reuse the same app URL).
-- The upload limit is 50 MB (`.streamlit/config.toml`).
 
 ---
 
