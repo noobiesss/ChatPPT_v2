@@ -6,6 +6,10 @@
 
 **Turn a report or your notes into a consulting-style PowerPoint deck by chatting.**
 
+<p align="center">
+  <img src="assets/chatpptdemo.gif" alt="ChatPPT demo" width="800">
+</p>
+
 ChatPPT V2 is a Streamlit web app. You give it a PDF, Word file or pasted text; it designs a slide outline with conclusion-first titles, picks a fitting layout for every slide (cards, KPIs, charts, timelines, comparison tables, images…), lets you refine it in plain language or edit it by hand, and renders a fully editable `.pptx` with native PowerPoint charts and tables.
 
 It works with your own API key for Google Gemini, Groq, OpenAI, DeepSeek, OpenRouter or any OpenAI-compatible endpoint.
