@@ -76,6 +76,8 @@ def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict
     if idx == 0:
         layout = LayoutType.COVER.value
 
+    # Every layout's fields are filled (not only the current layout's), so the editor can switch a
+    # slide to any layout without missing data. Placeholders are hidden from the model in patch prompts.
     # Ensure default points exist
     if not s_dict.get("points"):
         s_dict["points"] = [
@@ -236,7 +238,11 @@ def mentions_slide_count(text: str) -> bool:
 
 # Relative slide-count edits in revision notes, e.g. "add one more slide", "remove the last slide", "\u52a0\u4e00\u9875"
 _EN_QTY = r"\d+|an?|one|two|three|four|five|six"
-_EN_SKIP = r"(?!(?:to|on|in|of|for|at|the|this|that|each|every|from|with|about)\b)"
+# Up to 3 filler words may sit between the quantity and "slide" ("add a short conclusion slide"), but never a
+# preposition/determiner: that keeps "add a chart to slide 3" from counting as a new slide
+_EN_SKIP =r"(?!(?:to|on|in|of|for|at|the|this|that|each|every|from|with|about)\b)"
+# Alternatives: "add <n> [more] ... slide(s)" | "<n> more slides" | "another ... slide" | "add a thank-you slide".
+# (?!\s*\d) rejects references to an existing slide ("add a chart on slide 3")
 _EN_ADD_RE = re.compile(
     rf"\b(?:add|insert|append|include|create)\s+(?P<n1>{_EN_QTY})\s+(?:(?:more|extra|additional|new|another)\s+)?"
     rf"(?:{_EN_SKIP}[\w-]+\s+){{0,3}}?(?:slides?|pages?)\b(?!\s*\d)"
@@ -252,6 +258,8 @@ _EN_REMOVE_RE = re.compile(
 )
 # Chinese: verbs add = \u52a0/\u589e\u52a0/\u6dfb\u52a0/\u65b0\u589e/\u8865\u5145 ; remove = \u5220\u9664/\u5220\u6389/\u5220/\u53bb\u6389/\u51cf\u5c11/\u51cf ; unit = \u9875/\u9801/\u5f20/\u5f35
 _ZH_QTY = r"\d+|[\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]"
+# Up to 4 characters between the verb and the unit, but not \u5230/\u5728/\u7b2c/\u6bcf ("to / on / the Nth / every"),
+# so "\u52a0\u5230\u7b2c3\u9875" (add to slide 3) is an edit of slide 3, not a new slide
 _ZH_GAP = r"(?:(?![\u5230\u5728\u7b2c\u6bcf])\w){0,4}?"
 _ZH_ADD_RE = re.compile(
     rf"(?:\u52a0|\u589e\u52a0|\u6dfb\u52a0|\u65b0\u589e|\u8865\u5145)\s*(?P<n>{_ZH_QTY})?\s*[\u4e2a\u500b]?\s*{_ZH_GAP}[\u9875\u9801\u5f20\u5f35]"
@@ -371,6 +379,7 @@ def _trim_slides_to_count(slides: List[SlideSpec], target: int) -> List[SlideSpe
     then drop slides right before the closing slide so the cover and the conclusion survive.
     """
     trimmed = list(slides)
+    # Walk backwards (deleting is index-safe) and stop at 1 so the cover at index 0 is never checked
     for idx in range(len(trimmed) - 1, 0, -1):
         if len(trimmed) <= target:
             break
@@ -436,6 +445,7 @@ def generate_smart_outline(
     warning: Optional[str] = None
 
     if enforce_count and len(outline.slides) != num_slides:
+        # Each retry shows the model its previous titles and how far off it was; keep the closest answer
         best = outline
         current = outline
         for _ in range(OUTLINE_COUNT_MAX_RETRIES):
@@ -518,8 +528,9 @@ def patch_slides(
     current = [deck[n - 1] for n in targets]
     nums = ", ".join(str(n) for n in targets)
 
+    # Retrieve source excerpts using the instruction plus the target slides' text as the search query
     query = f"{instruction}\n{build_deck_digest(current)}"
-    source = select_relevant_context(source_text, query, PATCH_SOURCE_MAX_CHARS)
+    source =select_relevant_context(source_text, query, PATCH_SOURCE_MAX_CHARS)
     current_json = json.dumps([_slide_for_prompt(s) for s in current], ensure_ascii=False, indent=1)
     prompt = f"""
     You are editing ONE PART of an existing {len(deck)}-slide deck. Rewrite ONLY slide(s) {nums}.

@@ -68,6 +68,7 @@ def _ensure_white_text_contrast(color: RGBColor, min_ratio: float = 4.5) -> RGBC
     """
     rgb = (color[0], color[1], color[2])
     for _ in range(30):
+        # WCAG contrast = (L_lighter + 0.05) / (L_darker + 0.05), with white's luminance = 1.0
         ratio = 1.05 / (_relative_luminance(rgb) + 0.05)
         if ratio >= min_ratio:
             break
@@ -112,6 +113,8 @@ def _parse_theme_xml_colors_and_fonts(prs: Presentation) -> Tuple[Dict[str, Tupl
                 if rgb_tuple is not None:
                     colors[tag_name] = rgb_tuple
 
+        # majorFont = headings, minorFont = body. Names starting with "+" (e.g. "+mj-lt") are references
+        # to other theme slots, not real typefaces, so they are ignored here and below
         font_scheme = root.find(f".//{_NS_A}fontScheme")
         if font_scheme is not None:
             major_latin = font_scheme.find(f"{_NS_A}majorFont/{_NS_A}latin")
@@ -167,6 +170,8 @@ def _sample_slide_colors_and_fonts(prs: Presentation) -> Dict[str, object]:
         n_slides = len(prs.slides)
         font_runs_slides: List[Tuple[str, float]] = []
         font_runs_other: List[Tuple[str, float]] = []
+        # Sample slides come first, so s_idx 0 is the template's cover and s_idx < n_slides means "a real slide";
+        # layouts and masters are only used for anything the slides did not set
         containers = list(prs.slides) + list(prs.slide_layouts) + list(prs.slide_masters)
         for s_idx, container in enumerate(containers):
             c_sld = container._element.find(f"{_NS_P}cSld")
@@ -216,6 +221,7 @@ def _sample_slide_colors_and_fonts(prs: Presentation) -> Dict[str, object]:
         from collections import Counter
         runs = font_runs_slides or font_runs_other
         if runs:
+            # Heading = font of the biggest run (if title-sized, >= 18pt); body = most common font below 18pt
             sized = [r for r in runs if r[1] > 0]
             heading = None
             if sized:
@@ -393,6 +399,7 @@ def _scale_template_to_widescreen(prs: Presentation, target_w_in: float = 13.333
     orig_w = int(prs.slide_width or target_w)
     orig_h = int(prs.slide_height or target_h)
 
+    # 1000 EMU is about 0.001 in: skip rescaling for templates that are already 16:9 apart from rounding
     if abs(orig_w - target_w) > 1000 or abs(orig_h - target_h) > 1000:
         scale_x = target_w / float(orig_w)
         scale_y = target_h / float(orig_h)
@@ -548,6 +555,8 @@ def _capture_template_prototypes(prs: Presentation) -> Dict[str, dict]:
 
 def _remap_embed_rids(el, old_rels: dict, target_slide_part) -> None:
     """Remap any r:embed or r:link attributes in a cloned XML element onto target_slide_part."""
+    # Relationship ids (rId3, ...) are local to each slide part, so a cloned picture/background would point at
+    # nothing on the new slide. Re-create each relationship there and rewrite the id.
     for attr_name in (f"{_NS_R}embed", f"{_NS_R}link", f"{_NS_R}id"):
         for node in el.iter():
             old_rid = node.get(attr_name)
@@ -662,7 +671,8 @@ def _create_slide_with_template(
                 pic = slide.shapes.add_picture(
                     io.BytesIO(item["blob"]), 0, 0, width=slide_w, height=slide_h
                 )
-                # Send the background picture behind everything else on the slide
+                # Send the background picture behind everything else on the slide. The shape tree's first two
+                # children are its own properties (nvGrpSpPr, grpSpPr), so index 2 is the back-most shape.
                 sp_tree = slide.shapes._spTree
                 sp_tree.remove(pic._element)
                 sp_tree.insert(2, pic._element)

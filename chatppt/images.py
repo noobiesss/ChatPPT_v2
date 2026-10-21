@@ -163,6 +163,7 @@ def assign_report_images(
         if s.get("layout_type") == LayoutType.IMAGE_SPLIT.value
         and (s.get("image_source_mode") or default_image_mode) == IMAGE_MODE_REPORT_FIRST
     ]
+    # Pass 1: honor valid explicit picks. Pass 2: hand out the unused figures in order to the rest.
     assigned: Dict[int, int] = {}
     for i in targets:
         idx = slides[i].get("report_image_index")
@@ -243,6 +244,7 @@ def add_picture_fitted(
         img_ratio = img_w / float(img_h)
         box_ratio = box_width / float(box_height)
 
+        # "Contain" fit: an image wider than the box fills its width, otherwise its height
         if img_ratio > box_ratio:
             final_w = box_width
             final_h = box_width / img_ratio

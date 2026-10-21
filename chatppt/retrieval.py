@@ -15,8 +15,10 @@ BM25_K1, BM25_B = 1.5, 0.75
 # Marker placed between non-adjacent excerpts so the model knows text was skipped
 GAP_MARKER = "\n\n[...]\n\n"
 
+# Words and numbers, keeping figures like "3.2%" or "1,200" as one token
 _WORD_RE = re.compile(r"[a-z0-9]+(?:[.,][0-9]+)*%?")
-_CJK_RUN_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]+")
+# Runs of CJK ideographs (Extension A, Unified Ideographs, Compatibility Ideographs)
+_CJK_RUN_RE =re.compile(r"[㐀-䶿一-鿿豈-﫿]+")
 _STOPWORDS = frozenset(
     "a an and are as at be but by can do does for from has have how i in is it its me my of on or our so that the "
     "their them there these they this to was we were what when where which who why will with you your about "
@@ -88,6 +90,7 @@ def bm25_scores(text: str, query: str) -> List[float]:
     scores = [0.0] * n
     if not n or not terms:
         return scores
+    # Standard BM25: rare terms weigh more (idf), repeated terms saturate (k1), long chunks are penalized (b)
     for term in terms:
         df = doc_freq.get(term, 0)
         if not df:
@@ -116,7 +119,7 @@ def select_relevant_context(text: str, query: str, max_chars: int) -> str:
     if not any(scores):
         return text[:max_chars] + GAP_MARKER
 
-    chosen = {0}
+    chosen = {0}  # the first chunk (title / intro) is always kept
     used = len(chunks[0])
 
     def take(i: int) -> None:

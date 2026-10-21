@@ -121,6 +121,7 @@ def handle_send(chat: dict, text: str, report, model_cfg: dict, tone: str, langu
         "sync_slides": relative_target,
     }
     chat["composer_ver"] += 1  # new widget keys => text box and file uploader reset
+    # The job only runs on the next rerun (run_pending), so the user's message is on screen before the slow LLM call
     st.rerun()
 
 
@@ -186,6 +187,8 @@ def run_pending(chat: dict, container) -> None:
     """Run the queued job in the chat area: answer a question, or generate the outline; then rerun."""
     p = chat["pending"]
     default_img_mode = st.session_state.settings.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST)
+    # st.rerun() raises and ends this run, so each finished step below returns early. A failed or
+    # disallowed patch falls through to the full regeneration.
     with container:
         with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
             if p.get("route"):

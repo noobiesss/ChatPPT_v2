@@ -52,6 +52,8 @@ def part_signature(chat: dict, part: str) -> str:
         raw = chat.get("source_text") or ""
     else:
         figures = chat.get("report_images") or []
+        # Names + byte sizes stand in for the image data (figures are replaced, never edited in place);
+        # the size-cap flag is included so crossing MAX_IMAGES_BYTES also counts as a change
         raw = repr([(im.get("name"), len(im.get("bytes") or b"")) for im in figures]) + repr(_images_fit(chat))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 

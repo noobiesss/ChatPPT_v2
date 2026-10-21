@@ -37,6 +37,8 @@ def build_presentation_pptx(
     is_custom_template = bool(custom_template_bytes)
 
     if is_custom_template:
+        # Order matters: rescale first so captured geometry is 16:9, read the style and snapshot the
+        # sample slides' backgrounds before decorations and sample slides are removed
         prs = Presentation(io.BytesIO(custom_template_bytes))
         _scale_template_to_widescreen(prs, 13.333, 7.5)
         theme = extract_template_style(

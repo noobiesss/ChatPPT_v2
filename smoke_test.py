@@ -19,6 +19,7 @@ from pptx.util import Inches, Pt
 def check_imports() -> None:
     import chatppt
 
+    # Import every submodule recursively, so a syntax error or a broken import anywhere fails fast
     names = [m.name for m in pkgutil.walk_packages(chatppt.__path__, "chatppt.")]
     for name in names:
         importlib.import_module(name)
@@ -33,6 +34,7 @@ def check_imports() -> None:
 
 
 def sample_slides() -> list:
+    # One slide per layout type (11 in total), shaped like a sanitized outline; other checks index into it
     pts = [{"heading": f"Point {i}", "detail": "Supporting detail text for this point."} for i in range(1, 4)]
     return [
         {"slide_number": 1, "layout_type": "cover", "action_title": "Deck Title", "subtitle_or_context": "Subtitle"},
@@ -67,6 +69,7 @@ def check_builtin_decks() -> None:
     from chatppt.presets import BUILTIN_THEMES
 
     slides = sample_slides()
+    # Two themes are enough to catch theme-specific crashes; re-opening the bytes proves the file is valid
     for theme in list(BUILTIN_THEMES)[:2]:
         data = build_presentation_pptx(slides, theme, None, False, "", [])
         out = Presentation(io.BytesIO(data))
@@ -83,16 +86,20 @@ def check_builtin_decks() -> None:
 
 
 def _make_template() -> bytes:
+    """Build a 16:9 user template that has a border frame on its master and explicit fonts on a sample slide."""
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
-    layout = prs.slide_layouts[6]
+    layout = prs.slide_layouts[6]  # "Blank" layout
     tmp = prs.slides.add_slide(layout)  # the template's one sample slide (explicit Georgia / Verdana runs)
     frame = tmp.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.5), Inches(0.5), Inches(12.3), Inches(6.5))
     frame.fill.background()
     frame.name = "TemplateFrame"
+    # python-pptx can't add shapes to a master directly, so move the frame's XML from the slide onto the master.
+    # It then shows on every slide, like the decorative borders in real corporate templates.
     el = frame._element
     el.getparent().remove(el)
     prs.slide_masters[0].shapes._spTree.append(el)
+    # A large title run and a small body run; the builder should pick these up as the template's title/body fonts
     for name, size, text in (("Georgia", 36, "Big title"), ("Verdana", 14, "body text")):
         tb = tmp.shapes.add_textbox(Inches(1), Inches(1 if size > 20 else 3), Inches(8), Inches(1))
         run = tb.text_frame.paragraphs[0].add_run()
@@ -109,6 +116,7 @@ def check_custom_template() -> None:
         sample_slides()[:3], "Corporate Blue", None, False, "", [], custom_template_bytes=_make_template()
     )
     out = Presentation(io.BytesIO(data))
+    # Only placeholders may remain on the master; decorations like the frame would overlap the generated layouts
     leftovers = [s.name for s in out.slide_masters[0].shapes if not s.is_placeholder]
     assert not leftovers, f"master decorations still present: {leftovers}"
     assert len(out.slides) == 3
@@ -281,6 +289,8 @@ def check_patch() -> None:
     new = SlideSpec(slide_number=4, layout_type="bullet_cards", action_title="Patched title",
                     points=[{"heading": "H", "detail": "D"}])
     stray_closing = SlideSpec(slide_number=5, layout_type="closing", action_title="Bye")
+    # Stub out the LLM call so the patch logic runs offline; the "model" returns slide 4 rewritten plus a
+    # misplaced closing slide for slide 5. Always restore the real function, even if the patch raises.
     real = outline._request_outline
     try:
         outline._request_outline = lambda *a, **k: SlidePatch(slides=[new, stray_closing])
@@ -481,6 +491,7 @@ def check_token_limits() -> None:
 
     import chatppt.llm_client as llm
 
+    # Builds an HTTPError whose JSON body copies Groq's real 413/429 token-limit message, which the client parses
     def groq_error(code, limit, requested, used=None, retry=None):
         used_part = f"Used {used}, " if used is not None else ""
         retry_part = f" Please try again in {retry}s." if retry is not None else ""
@@ -489,6 +500,7 @@ def check_token_limits() -> None:
                                      "type": "tokens", "code": "rate_limit_exceeded"}})
         return urllib.error.HTTPError("u", code, "err", {}, io.BytesIO(body.encode()))
 
+    # A minimal successful urlopen() response (used as a context manager, read() returns a chat completion)
     class Ok:
         def __enter__(self):
             return self
@@ -499,6 +511,8 @@ def check_token_limits() -> None:
         def read(self):
             return json.dumps({"choices": [{"message": {"content": '{"ok": 1}'}, "finish_reason": "stop"}]}).encode()
 
+    # Sends one request through the real client with urlopen replaced: each attempt pops the next scripted
+    # response and records the max_completion_tokens it asked for, so retries and cap shrinking can be checked
     def run(responses):
         caps, real = [], urllib.request.urlopen
 
@@ -523,6 +537,7 @@ def check_token_limits() -> None:
         assert "too large" in str(e) and "8,000" in str(e)
     # Only the reserved output makes it too big -> retried once with a smaller output cap
     _, caps = run([groq_error(413, 12000, 15300), Ok()])
+    # New cap = limit - input tokens (requested - old cap) - 100 safety margin
     assert caps[0] == 8192 and caps[1] == 12000 - (15300 - 8192) - 100, caps
     # Minute budget temporarily used up -> short wait, then the same request again
     _, caps = run([groq_error(429, 12000, 4000, used=9000, retry=0.01), Ok()])
@@ -531,6 +546,7 @@ def check_token_limits() -> None:
 
 
 if __name__ == "__main__":
+    # Each check prints "[ok] ..." when it passes; the first failed assert stops the run with a traceback and exit code 1
     for fn in (check_imports, check_builtin_decks, check_custom_template, check_helpers, check_closing_slide,
                check_new_layouts, check_report_images, check_assistant, check_retrieval, check_patch, check_token_limits,
                check_history_and_projects, check_structure_ops, check_preview,

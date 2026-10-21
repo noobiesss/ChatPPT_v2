@@ -39,6 +39,7 @@ def can_redo(chat: dict) -> bool:
 
 
 def _swap(chat: dict, source: List, target: List) -> Optional[List[dict]]:
+    # Shared by undo and redo: save the current outline on one stack, restore the top of the other
     if not source:
         return None
     if chat.get("slides"):

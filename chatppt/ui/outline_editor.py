@@ -117,6 +117,8 @@ def _apply_slide_op(chat: dict, op: str, idx: int, image_mode: str) -> None:
 
 def render_outline_editor(chat: dict) -> None:
     """Interactive per-slide editor. Widget keys are scoped by chat id + generation counter."""
+    # A keyed widget keeps its own value and ignores `value=` after the first run. Bumping chat["gen"] gives every
+    # widget a new key, so the editor reloads from chat["slides"] after a regeneration, patch, undo or move.
     kp = f"{chat['id']}_{chat['gen']}_"
     layout_options = [lt.value for lt in LayoutType]
     default_img_mode = st.session_state.settings.get("image_mode", IMAGE_MODE_UNSPLASH_FIRST)

@@ -45,6 +45,7 @@ def main():
     # this run is already in the chat when it is fingerprinted (in the sidebar it would see the old data)
     sync_browser_chats()
 
+    # The slow LLM job runs last, after the whole page (including the new user message) is already drawn
     if chat["pending"] is not None:
         run_pending(chat, chat_area)
 

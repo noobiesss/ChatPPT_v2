@@ -121,6 +121,7 @@ def extract_clean_json_str(raw_text: Optional[str]) -> str:
         return ""
 
     cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+    # Unclosed <think> (reasoning cut off or never closed): drop the reasoning up to the first "{" after it
     if "<think>" in cleaned:
         think_pos = cleaned.find("<think>")
         brace_after = cleaned.find("{", think_pos)
@@ -234,6 +235,8 @@ def call_openai_compatible_json(
 
     last_finish_reason = None
 
+    # Up to 4 attempts, from most to least strict: JSON mode + token/reasoning params first, then drop
+    # whatever the endpoint rejects. `continue` drops the extra params, `break` drops JSON mode.
     for use_json_mode in (True, False):
         for include_extra_params in (True, False):
             payload: Dict[str, object] = {
@@ -388,6 +391,7 @@ def _post_chat_completion(url: str, headers: Dict[str, str], payload: Dict[str, 
             if not info:
                 http_err.chatppt_body = body
                 raise
+            # "Requested" = prompt tokens + the output cap we reserved, so the prompt size is the difference
             cap = int(payload.get(cap_key, 0)) if cap_key else 0
             input_tokens = max(int(info["requested"]) - cap, 0)
             limit = int(info["limit"])

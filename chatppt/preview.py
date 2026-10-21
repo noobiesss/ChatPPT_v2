@@ -41,11 +41,13 @@ def _hex(color) -> str:
 
 
 def _pos(x: float, y: float, w: float, h: float) -> str:
+    # Inches -> percent of the slide, so the wireframe scales with whatever width the page gives it
     return (f"left:{x / SLIDE_W * 100:.3f}%;top:{y / SLIDE_H * 100:.3f}%;"
             f"width:{w / SLIDE_W * 100:.3f}%;height:{h / SLIDE_H * 100:.3f}%;")
 
 
 def _fs(pt: float) -> str:
+    # cqw = 1% of the .cpv-slide container's width, so text keeps the same size relative to the slide
     return f"font-size:{pt * 100 / _PT_W:.4f}cqw;"
 
 
@@ -53,6 +55,7 @@ def _fs(pt: float) -> str:
 
 def _char_em(ch: str) -> float:
     """Approximate advance width of one character in em."""
+    # Wide / full-width characters (CJK, full-width punctuation) take a full em
     if unicodedata.east_asian_width(ch) in ("W", "F"):
         return 1.0
     if ch == " ":
@@ -65,7 +68,8 @@ def _char_em(ch: str) -> float:
 
 
 def _lines(text: str, pt: float, bold: bool, width_in: float) -> int:
-    avail = max((width_in - 2 * _INSET_X) * 72, 1.0)
+    # Wrapped lines per hard line = text width in points (sum of em widths x font size) / usable box width
+    avail =max((width_in - 2 * _INSET_X) * 72, 1.0)
     total = 0
     for line in (text or "").split("\n") or [""]:
         em = sum(_char_em(c) for c in line) * (1.06 if bold else 1.0) * 1.05  # 5% slack for word wrapping
@@ -218,7 +222,8 @@ def _chart(c, s, t, theme):
     c.text(1.0, 1.95, 6.0, 0.45, [_p(ch.get("chart_title", ""), 13, t["title"], bold=True)], align="center", check=False)
     kind = ch.get("chart_type", "bar")
     if n and kind == "pie":
-        total = sum(max(v, 0) for v in vals) or 1
+        # One conic-gradient stop per slice, alternating accent and body colors
+        total =sum(max(v, 0) for v in vals) or 1
         stops, acc = [], 0.0
         for i, v in enumerate(vals):
             start, acc = acc, acc + max(v, 0) / total * 100
@@ -360,6 +365,7 @@ def render_slide_preview(
     Return (html, warnings) for one slide. `theme` is a pptx theme dict (RGBColor values, optional fonts).
     The html needs PREVIEW_CSS on the page once. Warnings list the text boxes estimated to overflow.
     """
+    # RGBColor is a 3-tuple, so this converts every color in the theme to CSS hex and skips the font names
     t = {k: _hex(v) for k, v in theme.items() if isinstance(v, tuple) and len(v) == 3}
     t["title"], t["body"] = t["title_content"], t["body_content"]
     t["accent_strong"] = _hex(_ensure_white_text_contrast(theme["accent"]))

@@ -68,6 +68,7 @@ def load_slides(raw_slides) -> List[dict]:
             spec = SlideSpec.model_validate(raw)
         except Exception as exc:  # noqa: BLE001
             raise ProjectFileError(f"Slide {i + 1} in the project is not valid: {str(exc)[:200]}") from exc
+        # A project file is user-supplied: re-run the generation sanitizer so every slide is safe to edit and render
         mode = raw.get("image_source_mode")
         mode = mode if mode in IMAGE_MODE_OPTIONS else IMAGE_MODE_UNSPLASH_FIRST
         slide = _sanitize_slide(spec, i, mode)

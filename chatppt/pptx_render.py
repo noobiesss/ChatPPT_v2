@@ -18,6 +18,10 @@ from chatppt.images import add_picture_fitted
 from chatppt.pptx_template import _ensure_white_text_contrast
 from chatppt.schemas import ChartType
 
+# All positions are in inches on a 13.333 x 7.5 in (16:9) canvas. Content layouts share one grid:
+# title at y 0.42-1.47, accent underline at 1.52, body area about y 1.8-6.1 between x 0.8 and 12.5,
+# takeaway banner at y 6.35 and the slide number at the bottom right.
+
 
 def apply_slide_fonts(slide, theme: Dict[str, object]) -> None:
     """Apply the template's heading and body fonts across all text frames on a rendered slide."""
@@ -30,7 +34,8 @@ def apply_slide_fonts(slide, theme: Dict[str, object]) -> None:
         if not getattr(shape, "has_text_frame", False):
             continue
         for para in shape.text_frame.paragraphs:
-            is_heading = bool(para.font.bold) or (para.font.size is not None and para.font.size >= Pt(16))
+            # Renderers mark headings with bold or a size of 16pt and up; everything else is body text
+            is_heading =bool(para.font.bold) or (para.font.size is not None and para.font.size >= Pt(16))
             target_font = font_heading if is_heading else font_body
             if target_font:
                 para.font.name = target_font
@@ -48,6 +53,8 @@ def set_solid_background(slide, color: RGBColor) -> None:
 
 def clear_existing_slides(prs: Presentation) -> None:
     """Remove sample slides from an uploaded .pptx template while keeping Slide Masters intact."""
+    # python-pptx has no delete API: drop the presentation's relationship to the slide part and its
+    # entry in the slide id list (backwards, so indices stay valid)
     for i in range(len(prs.slides) - 1, -1, -1):
         r_id = prs.slides._sldIdLst[i].rId
         prs.part.drop_rel(r_id)
@@ -59,7 +66,7 @@ def draw_card_shape(slide, left: float, top: float, width: float, height: float,
     card = slide.shapes.add_shape(
         MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left), Inches(top), Inches(width), Inches(height)
     )
-    card.adjustments[0] = 0.04
+    card.adjustments[0] = 0.04  # corner radius as a fraction of the shorter side
     card.fill.solid()
     card.fill.fore_color.rgb = theme["card_bg"]
     card.line.color.rgb = theme["card_border"]
@@ -692,7 +699,9 @@ def render_comparison_table_slide(slide, slide_data: dict, theme: Dict[str, obje
     )
     table = frame.table
     table.first_row = True
-    table.horz_banding = False
+    table.horz_banding = False  # the zebra rows are filled below in theme colors instead of the table style's
+
+    # The criterion column gets a fixed share of the width; the other columns split the rest evenly
 
     first_w = total_w * (0.4 if n_cols == 2 else 0.26)
     table.columns[0].width = Inches(first_w)

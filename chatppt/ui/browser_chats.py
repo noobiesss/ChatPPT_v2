@@ -199,6 +199,7 @@ def sync_browser_chats() -> None:
         for cid in [c for c in sigs if c not in ss.chats]:  # chats deleted in the sidebar
             version = _queue(ops, {"op": "delete_chat", "id": cid}, version)
             del sigs[cid]
+        # Only the active chat can have changed in this run, so it is the only one fingerprinted
         chat = ss.chats.get(ss.active_chat)
         if chat and is_storable(chat):
             stored = sigs.setdefault(chat["id"], {})

@@ -18,6 +18,8 @@ SOURCE_CONTEXT_MAX_CHARS = 12000
 HISTORY_MAX_MESSAGES = 6
 HISTORY_MESSAGE_MAX_CHARS = 800
 
+# "ACTION: <verb>" on the first line, tolerating Markdown decoration (**, `, #, >) that models like to add.
+# Group 1 = verb, group 2 = rest of that line (PATCH slide list), group 3 = everything after (the answer text)
 _ACTION_RE = re.compile(
     r"^[\s*`#>]*ACTION\s*:\s*\**\s*(ANSWER|REVISE|PATCH)\b([^\n]*)\n?(.*)", re.IGNORECASE | re.DOTALL
 )

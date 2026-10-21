@@ -36,6 +36,8 @@ def settings_dialog() -> None:
     """One page, one Save: provider -> API key -> model, then image settings, then browser memory."""
     ss = st.session_state
     s = ss.settings
+    # Unsaved edits per provider: the key/model widgets are keyed by provider, so switching providers in the
+    # dialog would otherwise lose what was typed. Copied into ss.settings only on Save.
     draft = ss.setdefault("_settings_draft", {"keys": {}, "models": {}, "custom_url": None})
     providers = list(LLM_PROVIDERS.keys())
 

@@ -24,9 +24,9 @@ def new_chat(cid: Optional[str] = None) -> dict:
         "report_images": [],
         "pptx_bytes": None,
         "source_text": "",
-        "gen": 0,
-        "composer_ver": 0,
-        "pending": None,
+        "gen": 0,  # outline version: part of the editor's widget keys, bumped to rebuild them from chat["slides"]
+        "composer_ver": 0,  # part of the composer's widget keys, bumped to clear the text box and uploader
+        "pending": None,  # the queued job (see ui/generation.py); not None while a request is running
         "slides_history": [],  # undo stack of outline snapshots (see chatppt/deck_ops.py)
         "slides_future": [],  # redo stack
         "updated_at": 0.0,  # last change, for the browser chat store (chatppt/chat_store.py)

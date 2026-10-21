@@ -57,7 +57,8 @@ def parse_prefs(raw: Optional[str]) -> Optional[dict]:
     return {
         "settings": load_safe_settings(data.get("settings") if isinstance(data.get("settings"), dict) else {}),
         "options": load_options(data.get("options") if isinstance(data.get("options"), dict) else {}),
-        "remember_keys": data.get("remember_keys") is not False,
-        "api_keys": {k: _secret(v) for k, v in raw_keys.items() if k in LLM_PROVIDERS and _secret(v)},
+        "remember_keys": data.get("remember_keys") is not False,  # missing means on (the default)
+        # localStorage can be edited by hand: keep keys only for known providers and of a sane length
+        "api_keys":{k: _secret(v) for k, v in raw_keys.items() if k in LLM_PROVIDERS and _secret(v)},
         "unsplash_key": _secret(data.get("unsplash_key")) or "",
     }
