@@ -3,20 +3,21 @@
 Edit when: changing how the outline is requested, validated, trimmed, or normalized.
 """
 
-import json
-import re
+import json  # serializes the slides being patched into the prompt
+import re  # slide-count patterns in revision notes
 from typing import List, Optional, Tuple, Type
 
-from google import genai
+from google import genai  # Gemini SDK (supports schema-enforced JSON output natively)
 from google.genai import types
 from pydantic import BaseModel
 
-from chatppt.chat_assistant import build_deck_digest
-from chatppt.images import _derive_fallback_keywords
+from chatppt.chat_assistant import build_deck_digest  # compact text view of slides, reused in patch prompts
+from chatppt.images import _derive_fallback_keywords  # Unsplash keywords from a title when the model gave none
+# JSON calls for OpenAI-compatible providers, output cleaning / repair, and the token-limit error
 from chatppt.llm_client import TokenBudgetError, call_openai_compatible_json, extract_clean_json_str, repair_json_str
-from chatppt.presets import LLM_PROVIDERS
-from chatppt.prompts import SYSTEM_INSTRUCTION
-from chatppt.retrieval import select_relevant_context
+from chatppt.presets import LLM_PROVIDERS  # provider endpoint URLs
+from chatppt.prompts import SYSTEM_INSTRUCTION  # the slide-design system prompt
+from chatppt.retrieval import select_relevant_context  # BM25 excerpts of the source for targeted edits
 from chatppt.schemas import ChartType, IMAGE_MODE_OPTIONS, IMAGE_MODE_UNSPLASH_FIRST, ImagePlacement, LayoutType, PresentationOutline, SlideSpec, SlidePatch, VisualStyle
 
 
@@ -29,17 +30,20 @@ def normalize_timeline_steps(steps: Optional[List[dict]]) -> List[dict]:
     """Drop empty steps, fill missing keys, keep at most TIMELINE_MAX_STEPS."""
     out = []
     for step in steps or []:
-        step = step or {}
+        step = step or {}  # a None entry becomes an empty dict
         title = str(step.get("title") or "").strip()
         desc = str(step.get("description") or "").strip()
         if not title and not desc:
-            continue
+            continue  # a step with no text at all is dropped
+        # A missing stage label becomes "Step N", numbered by the steps kept so far
         label = str(step.get("stage_label") or "").strip() or f"Step {len(out) + 1}"
+        # A missing title is taken from the start of the description
         out.append({"stage_label": label, "title": title or desc[:40], "description": desc})
     return out[:TIMELINE_MAX_STEPS]
 
 
 def _steps_from_points(points: List[dict]) -> List[dict]:
+    # Turn card points into timeline steps: heading -> title, detail -> description
     return normalize_timeline_steps(
         [{"stage_label": f"Step {i + 1}", "title": p.get("heading"), "description": p.get("detail")}
          for i, p in enumerate(points or [])]
@@ -51,30 +55,31 @@ def normalize_table(headers: Optional[List[str]], rows: Optional[List[List[str]]
     Make the table rectangular: strip cells, drop empty rows, pad/cut every row to the header count,
     cap columns and rows. Returns ([], []) when fewer than 2 columns or no data row remain.
     """
-    headers = [str(h or "").strip() for h in (headers or [])][:TABLE_MAX_COLS]
+    headers = [str(h or "").strip() for h in (headers or [])][:TABLE_MAX_COLS]  # clean text, at most 5 columns
     while headers and not headers[-1]:
-        headers.pop()
+        headers.pop()  # drop empty trailing header cells
     if len(headers) < 2:
-        return [], []
+        return [], []  # a one-column "table" is not a comparison
     width = len(headers)
     clean_rows = []
     for row in rows or []:
+        # Clean each cell (None -> ""), cut the row to the header width
         cells = [str(c if c is not None else "").strip() for c in (row or [])][:width]
         if not any(cells):
-            continue
-        clean_rows.append(cells + [""] * (width - len(cells)))
-    clean_rows = clean_rows[:TABLE_MAX_ROWS]
+            continue  # skip rows that are entirely empty
+        clean_rows.append(cells + [""] * (width - len(cells)))  # pad short rows with empty cells
+    clean_rows = clean_rows[:TABLE_MAX_ROWS]  # at most 6 data rows
     return (headers, clean_rows) if clean_rows else ([], [])
 
 
 def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict:
     """Repair one slide (0-based deck position `idx`) and fill every sub-structure the editor and renderer expect."""
-    s_dict = slide.model_dump()
-    s_dict["slide_number"] = idx + 1
-    layout = s_dict["layout_type"]
+    s_dict = slide.model_dump()  # Pydantic model -> plain dict (enums become their string values)
+    s_dict["slide_number"] = idx + 1  # renumber from the deck position, whatever the model wrote
+    layout = s_dict["layout_type"]  # may be changed below; written back at the end
 
     if idx == 0:
-        layout = LayoutType.COVER.value
+        layout = LayoutType.COVER.value  # the first slide is always the cover
 
     # Every layout's fields are filled (not only the current layout's), so the editor can switch a
     # slide to any layout without missing data. Placeholders are hidden from the model in patch prompts.
@@ -86,7 +91,7 @@ def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict
             {"heading": "Key Finding 3", "detail": "Strategic recommendation and next implementation phase."},
         ]
 
-    # Ensure default two_column structures exist
+    # Ensure default two_column structures exist (built from the first / last two points)
     if not s_dict.get("left_column"):
         s_dict["left_column"] = {
             "column_title": "Current State / Challenges",
@@ -109,9 +114,10 @@ def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict
     # Validate or initialize chart structure
     chart = s_dict.get("chart")
     if not chart or not chart.get("categories") or not chart.get("values"):
+        # No chart data: a chart slide would show made-up numbers, so it becomes cards instead
         if layout == LayoutType.CHART_SLIDE.value:
             layout = LayoutType.BULLET_CARDS.value
-        s_dict["chart"] = {
+        s_dict["chart"] = {  # placeholder chart for the editor only
             "chart_type": ChartType.BAR.value,
             "chart_title": "Performance Comparison",
             "categories": ["Category A", "Category B", "Category C"],
@@ -119,34 +125,37 @@ def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict
             "values": [45.0, 72.0, 95.0],
         }
     else:
-        min_len = min(len(chart["categories"]), len(chart["values"]))
+        min_len = min(len(chart["categories"]), len(chart["values"]))  # pairs that have both a label and a value
         if min_len < 2:
             if layout == LayoutType.CHART_SLIDE.value:
-                layout = LayoutType.BULLET_CARDS.value
+                layout = LayoutType.BULLET_CARDS.value  # a one-bar chart is not worth a slide
         else:
+            # Cut both lists to the same length so every category has exactly one value
             chart["categories"] = chart["categories"][:min_len]
             chart["values"] = chart["values"][:min_len]
 
     # Validate timeline steps; a model that wrote `points` instead of steps still gets a timeline
     steps = normalize_timeline_steps(s_dict.get("timeline_steps"))
     if len(steps) < 2 and layout == LayoutType.TIMELINE_FLOW.value:
+        # slide.points (the model's original output), not s_dict["points"], which may hold the placeholders
         if len(slide.points or []) >= 2:
             steps = _steps_from_points(s_dict["points"])
         else:
             layout = LayoutType.BULLET_CARDS.value
-    s_dict["timeline_steps"] = steps or _steps_from_points(s_dict["points"])
+    s_dict["timeline_steps"] = steps or _steps_from_points(s_dict["points"])  # editor default for other layouts
 
     # Validate table: rectangular grid with 2-5 columns and at least 1 row, else fall back to cards
     headers, rows = normalize_table(s_dict.get("table_headers"), s_dict.get("table_rows"))
     if not rows and layout == LayoutType.COMPARISON_TABLE.value:
         layout = LayoutType.BULLET_CARDS.value
     if not rows:
+        # Editor default: a two-column Topic / Detail table made from the points
         headers = ["Topic", "Detail"]
         rows = [[p["heading"], p["detail"]] for p in s_dict["points"][:TABLE_MAX_ROWS]]
     s_dict["table_headers"], s_dict["table_rows"] = headers, rows
 
     # Validate or initialize image spec
-    fallback_kw = _derive_fallback_keywords(s_dict.get("action_title", ""))
+    fallback_kw = _derive_fallback_keywords(s_dict.get("action_title", ""))  # e.g. "revenue growth markets"
     if not s_dict.get("image"):
         s_dict["image"] = {
             "preferred_style": VisualStyle.STOCK_PHOTO.value,
@@ -156,10 +165,12 @@ def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict
             ),
             "search_keywords": fallback_kw,
             "caption": s_dict["action_title"],
+            # Alternate the image side by deck position so consecutive image slides don't look identical
             "placement": ImagePlacement.LEFT.value if idx % 2 == 0 else ImagePlacement.RIGHT.value,
         }
     else:
-        s_dict["image"]["preferred_style"] = VisualStyle.STOCK_PHOTO.value
+        s_dict["image"]["preferred_style"] = VisualStyle.STOCK_PHOTO.value  # stock photo first, AI as fallback
+        # Fill whichever of the two search inputs the model left empty
         if not (s_dict["image"].get("search_keywords") or "").strip():
             s_dict["image"]["search_keywords"] = fallback_kw
         if not (s_dict["image"].get("visual_prompt") or "").strip():
@@ -170,7 +181,7 @@ def _sanitize_slide(slide: SlideSpec, idx: int, default_image_mode: str) -> dict
 
     if layout == LayoutType.CLOSING.value:
         s_dict["bottom_takeaway"] = None  # a closing slide never carries a takeaway banner
-    s_dict["layout_type"] = layout
+    s_dict["layout_type"] = layout  # the final, possibly corrected layout
     # Default to Option 1 (Unsplash Photo First, Fallback to AI) unless the user selected Option 2
     s_dict["image_source_mode"] = default_image_mode
 
@@ -186,7 +197,7 @@ def sanitize_outline_dict(
     with all sub-structures initialized for safe UI editing and PPTX rendering.
     """
     if default_image_mode not in IMAGE_MODE_OPTIONS:
-        default_image_mode = IMAGE_MODE_UNSPLASH_FIRST
+        default_image_mode = IMAGE_MODE_UNSPLASH_FIRST  # unknown mode string: use the default
 
     sanitized_slides = []
 
@@ -195,6 +206,7 @@ def sanitize_outline_dict(
     closing_slides = [s for s in slides if s.layout_type == LayoutType.CLOSING]
     other_slides = [s for s in slides if s.layout_type != LayoutType.CLOSING]
     if closing_slides and other_slides:
+        # Keep only the last closing slide and move it to the end; the other slides keep their order
         slides = other_slides + [closing_slides[-1]]
 
     for idx, slide in enumerate(slides):
@@ -204,17 +216,19 @@ def sanitize_outline_dict(
     if len(sanitized_slides) >= 4 and not any(
         s["layout_type"] == LayoutType.IMAGE_SPLIT.value for s in sanitized_slides
     ):
+        # Prefer converting a card slide (it already has the points an image slide needs); never the cover
         candidate_indices = [
             i for i in range(1, len(sanitized_slides))
             if sanitized_slides[i]["layout_type"] in (LayoutType.BULLET_CARDS.value, LayoutType.THREE_CARDS.value)
         ]
         if not candidate_indices:
+            # Otherwise any content slide (not a divider or the closing slide)
             candidate_indices = [
                 i for i in range(1, len(sanitized_slides))
                 if sanitized_slides[i]["layout_type"] not in (LayoutType.SECTION_DIVIDER.value, LayoutType.CLOSING.value)
             ]
         if candidate_indices:
-            mid_idx = candidate_indices[len(candidate_indices) // 2]
+            mid_idx = candidate_indices[len(candidate_indices) // 2]  # the middle candidate, for variety mid-deck
             sanitized_slides[mid_idx]["layout_type"] = LayoutType.IMAGE_SPLIT.value
 
     return sanitized_slides
@@ -225,6 +239,8 @@ OUTLINE_COUNT_MAX_RETRIES = 2
 
 
 # Matches slide-count mentions in free-text revision notes, e.g. "6 slides", "add 2 more pages", "8页"
+# English: a number, an optional "more/extra/additional/new", then slide(s)/page(s).
+# Chinese: a number followed by a page/sheet unit character (\u9875 \u9801 \u5f20 \u5f35)
 _SLIDE_COUNT_MENTION_RE = re.compile(
     r"\d+\s*(?:more\s+|extra\s+|additional\s+|new\s+)?(?:slides?|pages?)|\d+\s*[\u9875\u9801\u5f20\u5f35]",
     re.IGNORECASE,
@@ -237,36 +253,43 @@ def mentions_slide_count(text: str) -> bool:
 
 
 # Relative slide-count edits in revision notes, e.g. "add one more slide", "remove the last slide", "\u52a0\u4e00\u9875"
-_EN_QTY = r"\d+|an?|one|two|three|four|five|six"
+_EN_QTY = r"\d+|an?|one|two|three|four|five|six"  # quantity words: a digit string, "a"/"an", or one..six
 # Up to 3 filler words may sit between the quantity and "slide" ("add a short conclusion slide"), but never a
 # preposition/determiner: that keeps "add a chart to slide 3" from counting as a new slide
-_EN_SKIP =r"(?!(?:to|on|in|of|for|at|the|this|that|each|every|from|with|about)\b)"
+_EN_SKIP = r"(?!(?:to|on|in|of|for|at|the|this|that|each|every|from|with|about)\b)"
 # Alternatives: "add <n> [more] ... slide(s)" | "<n> more slides" | "another ... slide" | "add a thank-you slide".
 # (?!\s*\d) rejects references to an existing slide ("add a chart on slide 3")
 _EN_ADD_RE = re.compile(
+    # 1) verb + quantity (group n1) + optional "more"-word + up to 3 filler words (lazy) + slide(s)/page(s)
     rf"\b(?:add|insert|append|include|create)\s+(?P<n1>{_EN_QTY})\s+(?:(?:more|extra|additional|new|another)\s+)?"
     rf"(?:{_EN_SKIP}[\w-]+\s+){{0,3}}?(?:slides?|pages?)\b(?!\s*\d)"
+    # 2) quantity (group n2) + "more"-word + slide(s), without a verb: "2 more slides"
     rf"|\b(?P<n2>\d+|one|two|three|four|five|six)\s+(?:more|extra|additional|new)\s+(?:slides?|pages?)\b"
+    # 3) "another [up to 2 words] slide": counts as one
     rf"|\banother\s+(?:{_EN_SKIP}[\w-]+\s+){{0,2}}?(?:slide|page)\b(?!\s*\d)"
+    # 4) "add [the] thank-you / closing / ending / Q&A slide" without a quantity: counts as one
     r"|\b(?:add|insert|append|include|create)\s+(?:the\s+)?(?:thank[\s-]?you|thanks|closing|ending|q\s*&\s*a)\s+(?:slides?|pages?)\b",
     re.IGNORECASE,
 )
+# Verb + optional quantity (group n) + any of "the/this/last/first/..." + up to 2 filler words + slide(s)
 _EN_REMOVE_RE = re.compile(
     rf"\b(?:remove|delete|drop|cut)\s+(?:(?P<n>{_EN_QTY})\s+)?(?:(?:the|this|that|last|first|final|extra)\s+)*"
     rf"(?:{_EN_SKIP}[\w-]+\s+){{0,2}}?(?:slides?|pages?)\b",
     re.IGNORECASE,
 )
 # Chinese: verbs add = \u52a0/\u589e\u52a0/\u6dfb\u52a0/\u65b0\u589e/\u8865\u5145 ; remove = \u5220\u9664/\u5220\u6389/\u5220/\u53bb\u6389/\u51cf\u5c11/\u51cf ; unit = \u9875/\u9801/\u5f20/\u5f35
-_ZH_QTY = r"\d+|[\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]"
+_ZH_QTY = r"\d+|[\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]"  # digits or Chinese numerals 1-10
 # Up to 4 characters between the verb and the unit, but not \u5230/\u5728/\u7b2c/\u6bcf ("to / on / the Nth / every"),
 # so "\u52a0\u5230\u7b2c3\u9875" (add to slide 3) is an edit of slide 3, not a new slide
 _ZH_GAP = r"(?:(?![\u5230\u5728\u7b2c\u6bcf])\w){0,4}?"
+# verb + optional quantity (group n) + optional measure word \u4e2a/\u500b + gap + page unit
 _ZH_ADD_RE = re.compile(
     rf"(?:\u52a0|\u589e\u52a0|\u6dfb\u52a0|\u65b0\u589e|\u8865\u5145)\s*(?P<n>{_ZH_QTY})?\s*[\u4e2a\u500b]?\s*{_ZH_GAP}[\u9875\u9801\u5f20\u5f35]"
 )
 _ZH_REMOVE_RE = re.compile(
     rf"(?:\u5220\u9664|\u5220\u6389|\u5220|\u53bb\u6389|\u51cf\u5c11|\u51cf)\s*(?P<n>{_ZH_QTY})?\s*[\u4e2a\u500b]?\s*{_ZH_GAP}[\u9875\u9801\u5f20\u5f35]"
 )
+# Quantity words -> numbers (English and Chinese numerals)
 _QTY_WORDS = {
     "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
     "\u4e00": 1, "\u4e8c": 2, "\u4e24": 2, "\u4e09": 3, "\u56db": 4, "\u4e94": 5,
@@ -279,7 +302,7 @@ MIN_SLIDES, MAX_SLIDES = 4, 20
 def _qty_value(token: Optional[str]) -> int:
     """Convert a quantity token ("2", "one", "\u4e24") to an int; a missing quantity means 1."""
     if not token:
-        return 1
+        return 1  # "add another slide" / "\u52a0\u9875": no number given means one
     token = token.lower()
     return int(token) if token.isdigit() else _QTY_WORDS.get(token, 1)
 
@@ -291,8 +314,9 @@ def parse_slide_count_change(text: str, current_count: int) -> Optional[int]:
     or None when the note contains no relative change.
     """
     text = text or ""
-    delta = 0
+    delta = 0  # net change: + for every add match, - for every remove match
     for m in _EN_ADD_RE.finditer(text):
+        # Only one of n1 / n2 is set, depending on which alternative matched (neither for "another")
         delta += _qty_value(m.groupdict().get("n1") or m.groupdict().get("n2"))
     for m in _ZH_ADD_RE.finditer(text):
         delta += _qty_value(m.group("n"))
@@ -301,8 +325,8 @@ def parse_slide_count_change(text: str, current_count: int) -> Optional[int]:
     for m in _ZH_REMOVE_RE.finditer(text):
         delta -= _qty_value(m.group("n"))
     if delta == 0:
-        return None
-    return max(MIN_SLIDES, min(MAX_SLIDES, current_count + delta))
+        return None  # no relative change (or adds and removes cancel out)
+    return max(MIN_SLIDES, min(MAX_SLIDES, current_count + delta))  # clamp to 4..20
 
 
 def _request_outline(
@@ -319,7 +343,7 @@ def _request_outline(
     Retries once automatically if the model returns transient malformed or empty JSON.
     """
     last_err: Optional[Exception] = None
-    for attempt in range(2):
+    for attempt in range(2):  # attempt 0, then one retry
         try:
             if provider == "Google Gemini":
                 client = genai.Client(api_key=api_key)
@@ -328,8 +352,8 @@ def _request_outline(
                     contents=user_prompt,
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_INSTRUCTION,
-                        response_mime_type="application/json",
-                        response_schema=response_model,
+                        response_mime_type="application/json",  # Gemini returns JSON only...
+                        response_schema=response_model,  # ...shaped by the Pydantic schema
                         temperature=0.3,
                     ),
                 )
@@ -337,6 +361,7 @@ def _request_outline(
                 if not raw_json:
                     raise RuntimeError(f"Google Gemini (`{model_name}`) returned an empty response.")
             else:
+                # Other providers: OpenAI-compatible endpoint (a custom URL overrides the preset)
                 endpoint_url = custom_base_url or LLM_PROVIDERS[provider]["base_url"]
                 raw_json = call_openai_compatible_json(
                     base_url=endpoint_url,
@@ -346,19 +371,21 @@ def _request_outline(
                     user_prompt=user_prompt,
                     response_model=response_model,
                 )
+            # Fix small JSON mistakes, then parse + validate against the schema (raises if still invalid)
             return response_model.model_validate_json(repair_json_str(raw_json, response_model))
         except TokenBudgetError:
             raise  # resending the same request cannot fit the provider's limit
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             if attempt == 0:
-                continue
-            raise last_err
+                continue  # first failure: try once more
+            raise last_err  # second failure: give up with the latest error
 
 
 def _build_count_correction(outline: PresentationOutline, num_slides: int) -> str:
     """Build a corrective note that tells the model exactly how its previous outline missed the target."""
     got = len(outline.slides)
+    # Numbered list of the previous titles, so the model can see what it produced
     titles = "\n".join(f"  {i + 1}. {s.action_title}" for i, s in enumerate(outline.slides))
     if got < num_slides:
         fix = f"Add {num_slides - got} more slide(s) covering other important parts of the source document."
@@ -378,15 +405,16 @@ def _trim_slides_to_count(slides: List[SlideSpec], target: int) -> List[SlideSpe
     Deterministically shorten an over-long deck: drop section dividers first (never the cover),
     then drop slides right before the closing slide so the cover and the conclusion survive.
     """
-    trimmed = list(slides)
+    trimmed = list(slides)  # a copy, so the caller's list is untouched
     # Walk backwards (deleting is index-safe) and stop at 1 so the cover at index 0 is never checked
     for idx in range(len(trimmed) - 1, 0, -1):
         if len(trimmed) <= target:
-            break
+            break  # short enough already
         if trimmed[idx].layout_type == LayoutType.SECTION_DIVIDER:
-            del trimmed[idx]
+            del trimmed[idx]  # dividers carry the least content
     # Keep the closing slide AND the conclusion before it when the deck ends with a thank-you slide
     protected_tail = 2 if trimmed and trimmed[-1].layout_type == LayoutType.CLOSING else 1
+    # Delete the slide just before the protected tail until the target is met (the cover is never reached)
     while len(trimmed) > target and len(trimmed) > protected_tail + 1:
         del trimmed[-(protected_tail + 1)]
     return trimmed
@@ -415,12 +443,14 @@ def generate_smart_outline(
     from the request, otherwise None.
     """
     if enforce_count:
+        # Strict wording: the exact count, repeated, plus an instruction to count before answering
         count_rule = (
             f"- Total Slides: Exactly {num_slides} slides (Slide 1 MUST be 'cover'). "
             f"The `slides` array MUST contain exactly {num_slides} objects numbered 1 to {num_slides}; "
             "count them before you answer."
         )
     else:
+        # The user's revision note names its own count ("make it 6 slides"): let that note decide
         count_rule = (
             "- Total Slides: if the revision notes at the end of the source document ask for a specific "
             f"slide count, follow them; otherwise use {num_slides} slides. Slide 1 MUST be 'cover'."
@@ -446,8 +476,8 @@ def generate_smart_outline(
 
     if enforce_count and len(outline.slides) != num_slides:
         # Each retry shows the model its previous titles and how far off it was; keep the closest answer
-        best = outline
-        current = outline
+        best = outline  # closest to the target so far
+        current = outline  # the latest answer, which the next correction refers to
         for _ in range(OUTLINE_COUNT_MAX_RETRIES):
             try:
                 current = _request_outline(
@@ -460,19 +490,21 @@ def generate_smart_outline(
             except Exception:  # noqa: BLE001 - keep the best earlier result instead of failing the whole job
                 break
             if abs(len(current.slides) - num_slides) < abs(len(best.slides) - num_slides):
-                best = current
+                best = current  # strictly closer to the target
             if len(current.slides) == num_slides:
-                break
+                break  # exact hit: stop retrying
         outline = best
 
         got = len(outline.slides)
         if got > num_slides:
+            # Too many: cut deterministically instead of asking again
             outline = outline.model_copy(update={"slides": _trim_slides_to_count(outline.slides, num_slides)})
             warning = (
                 f"The model kept returning {got} slides, so I trimmed the deck to the requested "
                 f"{num_slides} (section dividers and middle slides were dropped first)."
             )
         elif got < num_slides:
+            # Too few: missing content cannot be invented here, so the user is told
             warning = (
                 f"The model returned only {got} of the {num_slides} requested slides, even after retrying. "
                 "Try a larger model, or ask for more with a follow-up such as “add 2 more slides”."
@@ -499,9 +531,9 @@ _LAYOUT_FIELDS = {
 
 def _slide_for_prompt(slide: dict) -> dict:
     """The parts of a slide dict that are visible on the rendered slide (what the model should edit)."""
-    keys = ("slide_number", "layout_type", "action_title", "subtitle_or_context", "bottom_takeaway")
-    keys += _LAYOUT_FIELDS.get(slide.get("layout_type"), ())
-    return {k: slide.get(k) for k in keys if slide.get(k) not in (None, "", [])}
+    keys = ("slide_number", "layout_type", "action_title", "subtitle_or_context", "bottom_takeaway")  # always shown
+    keys += _LAYOUT_FIELDS.get(slide.get("layout_type"), ())  # plus this layout's own fields
+    return {k: slide.get(k) for k in keys if slide.get(k) not in (None, "", [])}  # empty values are left out
 
 
 def patch_slides(
@@ -522,15 +554,16 @@ def patch_slides(
     Raises if the model does not return one slide per target (the caller then regenerates the whole deck).
     """
     deck = list(slides or [])
-    targets = sorted({n for n in targets if 1 <= n <= len(deck)})
+    targets = sorted({n for n in targets if 1 <= n <= len(deck)})  # unique, in range, ascending
     if not targets:
         raise ValueError("No valid slide numbers to edit.")
-    current = [deck[n - 1] for n in targets]
-    nums = ", ".join(str(n) for n in targets)
+    current = [deck[n - 1] for n in targets]  # the slide dicts being rewritten (1-based -> 0-based)
+    nums = ", ".join(str(n) for n in targets)  # "2, 5" for the prompt
 
     # Retrieve source excerpts using the instruction plus the target slides' text as the search query
     query = f"{instruction}\n{build_deck_digest(current)}"
-    source =select_relevant_context(source_text, query, PATCH_SOURCE_MAX_CHARS)
+    source = select_relevant_context(source_text, query, PATCH_SOURCE_MAX_CHARS)
+    # The target slides as JSON, showing only the fields visible on each slide
     current_json = json.dumps([_slide_for_prompt(s) for s in current], ensure_ascii=False, indent=1)
     prompt = f"""
     You are editing ONE PART of an existing {len(deck)}-slide deck. Rewrite ONLY slide(s) {nums}.
@@ -557,25 +590,26 @@ def patch_slides(
     {source}
     \"\"\"
     """
+    # SlidePatch schema: the answer holds only the rewritten slides
     result = _request_outline(provider, api_key, model_name, prompt, custom_base_url, response_model=SlidePatch)
 
     got = list(result.slides)
-    by_number = {s.slide_number: s for s in got}
+    by_number = {s.slide_number: s for s in got}  # look up returned slides by their slide_number
     if len(got) == len(targets) and all(n in by_number for n in targets):
-        new_specs = [by_number[n] for n in targets]
+        new_specs = [by_number[n] for n in targets]  # numbers kept as asked: match them up exactly
     elif len(got) == len(targets):
         new_specs = got  # right count but renumbered: trust the order we asked for
     else:
         raise RuntimeError(f"The model returned {len(got)} slide(s) for the {len(targets)} requested.")
 
-    patched = list(deck)
+    patched = list(deck)  # new list, but every untouched slide is the same dict object as before
     for n, spec in zip(targets, new_specs):
         if spec.layout_type == LayoutType.CLOSING and n != len(deck):
-            spec = spec.model_copy(update={"layout_type": LayoutType.BULLET_CARDS})
+            spec = spec.model_copy(update={"layout_type": LayoutType.BULLET_CARDS})  # closing only allowed last
         old = deck[n - 1]
         # Keep the image option the user picked for this slide in the editor
         mode = old.get("image_source_mode") if old.get("image_source_mode") in IMAGE_MODE_OPTIONS else IMAGE_MODE_UNSPLASH_FIRST
-        patched[n - 1] = _sanitize_slide(spec, n - 1, mode)
+        patched[n - 1] = _sanitize_slide(spec, n - 1, mode)  # same repairs as a freshly generated slide
         if old.get("report_image_index") is not None:
-            patched[n - 1]["report_image_index"] = old["report_image_index"]
+            patched[n - 1]["report_image_index"] = old["report_image_index"]  # and the report figure they pinned
     return patched

@@ -3,19 +3,19 @@
 Edit when: fixing provider/model quirks (reasoning models, token limits), JSON repair, or model listing.
 """
 
-import json
-import re
-import time
-import urllib.error
-import urllib.request
+import json  # request / response bodies
+import re  # cleaning model output and reading rate-limit error messages
+import time  # sleeping before a rate-limit retry
+import urllib.error  # HTTPError raised by urlopen on 4xx / 5xx responses
+import urllib.request  # zero-dependency HTTP client
 from typing import List, Dict, Optional, Type
 
-from google import genai
+from google import genai  # Google's SDK, used for Gemini instead of raw HTTP
 from google.genai import types
-import streamlit as st
-from pydantic import BaseModel
+import streamlit as st  # only for st.cache_data on the model list
+from pydantic import BaseModel  # base class of the response schemas
 
-from chatppt.schemas import PresentationOutline
+from chatppt.schemas import PresentationOutline  # default schema a JSON reply must satisfy
 
 
 # Substrings that identify non-chat models (speech, embeddings, images, moderation...)
@@ -29,17 +29,20 @@ NON_CHAT_KEYWORDS = (
 
 def _is_chat_model(model_id: str) -> bool:
     lowered = model_id.lower()
+    # A model is treated as a chat model unless its id contains one of the keywords above
     return not any(kw in lowered for kw in NON_CHAT_KEYWORDS)
 
 
 def _derive_models_url(chat_url: str) -> str:
     """Turn a '.../chat/completions' endpoint into its sibling '.../models' endpoint."""
-    url = chat_url.strip().rstrip("/")
+    url = chat_url.strip().rstrip("/")  # tolerate spaces and a trailing slash in user-typed URLs
     if url.endswith("/chat/completions"):
+        # ".../v1/chat/completions" -> ".../v1/models"
         return url[: -len("/chat/completions")] + "/models"
-    return url + "/models"
+    return url + "/models"  # the user gave a base URL such as ".../v1"
 
 
+# Cached for 10 minutes per (provider, key, url), so reruns don't refetch the list
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_live_models(provider: str, api_key: str, base_url: str) -> List[str]:
     """
@@ -52,12 +55,14 @@ def fetch_live_models(provider: str, api_key: str, base_url: str) -> List[str]:
         client = genai.Client(api_key=api_key)
         ids = []
         for m in client.models.list():
-            actions = getattr(m, "supported_actions", None) or []
-            name = (getattr(m, "name", "") or "").replace("models/", "")
+            actions = getattr(m, "supported_actions", None) or []  # what the model can do, e.g. "generateContent"
+            name = (getattr(m, "name", "") or "").replace("models/", "")  # "models/gemini-x" -> "gemini-x"
+            # Keep text-generating Gemini models only (no embeddings, Imagen, ...)
             if "generateContent" in actions and name.startswith("gemini") and _is_chat_model(name):
                 ids.append(name)
-        return sorted(set(ids), reverse=True)
+        return sorted(set(ids), reverse=True)  # reverse: newer version numbers first
 
+    # Every other provider: GET the OpenAI-style /models endpoint
     req = urllib.request.Request(
         _derive_models_url(base_url),
         headers={
@@ -69,11 +74,12 @@ def fetch_live_models(provider: str, api_key: str, base_url: str) -> List[str]:
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
+    # OpenAI format is {"data": [...]}; some providers return the list directly
     items = data.get("data", data) if isinstance(data, dict) else data
     ids = []
     for item in items:
         if not isinstance(item, dict) or not item.get("id"):
-            continue
+            continue  # skip malformed entries
         # Groq flags retired/inactive models via an "active" field
         if item.get("active") is False:
             continue
@@ -84,7 +90,7 @@ def fetch_live_models(provider: str, api_key: str, base_url: str) -> List[str]:
         if provider == "OpenAI (Paid)" and not model_id.startswith(("gpt-", "chatgpt-", "o1", "o3", "o4")):
             continue
         ids.append(model_id)
-    return sorted(set(ids))
+    return sorted(set(ids))  # set() removes duplicates, sorted() gives a stable order
 
 
 def resolve_model_options(provider: str, api_key: str, base_url: str, static_models: List[str]):
@@ -92,8 +98,8 @@ def resolve_model_options(provider: str, api_key: str, base_url: str, static_mod
     Return (model_list, status_message). Prefers the live list; falls back to the static preset.
     The static list's order is kept for entries that still exist so sensible defaults stay on top.
     """
-    static_clean = [m for m in static_models if m != "Custom Model ID..."]
-    needs_key = provider != "OpenRouter (All-in-One)"
+    static_clean = [m for m in static_models if m != "Custom Model ID..."]  # the preset without the menu entry
+    needs_key = provider != "OpenRouter (All-in-One)"  # OpenRouter lists its models without a key
     if needs_key and not (api_key or "").strip():
         return static_models, "Enter your API key to load the live model list."
     if provider == "Custom OpenAI-Compatible API" and not (base_url or "").strip():
@@ -106,8 +112,8 @@ def resolve_model_options(provider: str, api_key: str, base_url: str, static_mod
     if not live:
         return static_models, "Provider returned no chat models; showing presets."
 
-    preferred = [m for m in static_clean if m in live]
-    ordered = preferred + [m for m in live if m not in preferred]
+    preferred = [m for m in static_clean if m in live]  # recommended presets that the provider still offers
+    ordered = preferred + [m for m in live if m not in preferred]  # then every other live model
     return ordered + ["Custom Model ID..."], f"Loaded {len(live)} live models from {provider}."
 
 
@@ -120,6 +126,7 @@ def extract_clean_json_str(raw_text: Optional[str]) -> str:
     if not raw_text or not isinstance(raw_text, str):
         return ""
 
+    # Remove complete reasoning blocks; DOTALL lets .*? span lines, the ? keeps each match to one block
     cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
     # Unclosed <think> (reasoning cut off or never closed): drop the reasoning up to the first "{" after it
     if "<think>" in cleaned:
@@ -128,23 +135,25 @@ def extract_clean_json_str(raw_text: Optional[str]) -> str:
         if brace_after != -1:
             cleaned = (cleaned[:think_pos] + cleaned[brace_after:]).strip()
         else:
-            cleaned = cleaned[:think_pos].strip()
+            cleaned = cleaned[:think_pos].strip()  # no JSON after it: keep only what came before
 
+    # ```json { ... } ``` (or a plain ``` fence): return the object inside the fence
     fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", cleaned, flags=re.DOTALL)
     if fence_match:
         return fence_match.group(1).strip()
 
+    # Otherwise take everything from the first "{" to the last "}", dropping prose around the JSON
     first_brace = cleaned.find("{")
     last_brace = cleaned.rfind("}")
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
         return cleaned[first_brace:last_brace + 1]
-    return cleaned
+    return cleaned  # no braces at all: return as-is and let the caller fail on it
 
 
 def _parses_as_outline(text: str, model: Type[BaseModel] = PresentationOutline) -> bool:
     """Return True if the text is valid JSON that satisfies the given schema (PresentationOutline by default)."""
     try:
-        model.model_validate_json(text)
+        model.model_validate_json(text)  # parses the JSON and checks it against the schema in one step
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -157,43 +166,44 @@ def repair_json_str(raw_text: str, model: Type[BaseModel] = PresentationOutline)
     if no repair produces a schema-valid outline.
     """
     if not raw_text or _parses_as_outline(raw_text, model):
-        return raw_text
+        return raw_text  # nothing to repair
 
     # Scan once, ignoring characters inside string literals
-    stack: List[str] = []
-    closer_positions: List[int] = []
-    in_string = False
-    escaped = False
+    stack: List[str] = []  # closers still expected, innermost last ("}" for "{", "]" for "[")
+    closer_positions: List[int] = []  # index of every } and ] outside strings (candidates for a stray one)
+    in_string = False  # currently inside "..."
+    escaped = False  # previous character was a backslash inside a string
     for idx, ch in enumerate(raw_text):
         if in_string:
             if escaped:
-                escaped = False
+                escaped = False  # this character was escaped (e.g. \" ), so it cannot end the string
             elif ch == "\\":
                 escaped = True
             elif ch == '"':
-                in_string = False
-            continue
+                in_string = False  # closing quote
+            continue  # braces inside strings are text, not structure
         if ch == '"':
             in_string = True
         elif ch in "{[":
-            stack.append("}" if ch == "{" else "]")
+            stack.append("}" if ch == "{" else "]")  # remember which closer this opener needs
         elif ch in "}]":
             closer_positions.append(idx)
             if stack and stack[-1] == ch:
-                stack.pop()
+                stack.pop()  # matches the innermost open container
 
     # Strategy 1: truncated output -> close any unterminated string/containers
+    # Close an open string first, then the containers from innermost to outermost
     candidate = raw_text + ('"' if in_string else "") + "".join(reversed(stack))
     if _parses_as_outline(candidate, model):
         return candidate
 
     # Strategy 2: a single stray closing brace/bracket -> try removing each one
     for pos in closer_positions:
-        candidate = raw_text[:pos] + raw_text[pos + 1:]
+        candidate = raw_text[:pos] + raw_text[pos + 1:]  # the text with this one character removed
         if _parses_as_outline(candidate, model):
             return candidate
 
-    return raw_text
+    return raw_text  # no repair worked
 
 
 def call_openai_compatible_json(
@@ -211,6 +221,8 @@ def call_openai_compatible_json(
     models (such as Groq's `openai/gpt-oss-120b` and `qwen/qwen3-32b`) so they never
     exhaust the default 1024-token ceiling on internal thinking and return `content: ""`.
     """
+    # The JSON Schema of the expected answer, pasted into the system prompt (not every provider
+    # supports schema-enforced output, but all of them can read it)
     schema_json = json.dumps(response_model.model_json_schema(), ensure_ascii=False)
     full_system_prompt = (
         f"{system_prompt}\n\n"
@@ -223,7 +235,7 @@ def call_openai_compatible_json(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key.strip()}",
-        "HTTP-Referer": "https://chatppt-v2.streamlit.app",
+        "HTTP-Referer": "https://chatppt-v2.streamlit.app",  # OpenRouter shows these two as the calling app
         "X-Title": "ChatPPT V2",
         "User-Agent": "ChatPPT-V2/2.0",
     }
@@ -233,7 +245,7 @@ def call_openai_compatible_json(
     is_groq = "groq.com" in url_lower
     is_openai = "openai.com" in url_lower
 
-    last_finish_reason = None
+    last_finish_reason = None  # why the last reply ended ("stop", "length", ...), for the final error message
 
     # Up to 4 attempts, from most to least strict: JSON mode + token/reasoning params first, then drop
     # whatever the endpoint rejects. `continue` drops the extra params, `break` drops JSON mode.
@@ -245,19 +257,21 @@ def call_openai_compatible_json(
                     {"role": "system", "content": full_system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "temperature": 0.3,
+                "temperature": 0.3,  # low randomness: structured output, not creative writing
             }
             if use_json_mode:
-                payload["response_format"] = {"type": "json_object"}
+                payload["response_format"] = {"type": "json_object"}  # ask the endpoint to return valid JSON only
 
             if include_extra_params:
                 # Reasoning models (e.g. Groq openai/gpt-oss-120b) default to 1024 max_completion_tokens
                 # and spend all of it inside `message.reasoning`, leaving `message.content` empty ("").
+                # Groq / OpenAI / OpenAI reasoning models use the newer parameter name; others the classic one
                 if is_groq or is_openai or model_lower.startswith(("o1", "o3", "o4", "gpt-5")):
                     payload["max_completion_tokens"] = 8192
                 else:
                     payload["max_tokens"] = 8192
 
+                # Less thinking leaves more of the token budget for the actual JSON
                 if "gpt-oss" in model_lower:
                     payload["reasoning_effort"] = "low"
                 elif is_groq and "qwen3" in model_lower:
@@ -266,18 +280,18 @@ def call_openai_compatible_json(
             try:
                 resp_data = _post_chat_completion(base_url, headers, payload, model_name)
             except urllib.error.HTTPError as http_err:
-                err_body = getattr(http_err, "chatppt_body", "")
+                err_body = getattr(http_err, "chatppt_body", "")  # body text saved by _post_chat_completion
                 lowered_err = err_body.lower()
                 if http_err.code == 400:
                     # 1. Groq-style "json_validate_failed": repair `failed_generation` if present
                     try:
                         failed_text = json.loads(err_body).get("error", {}).get("failed_generation")
                     except (ValueError, AttributeError):
-                        failed_text = None
+                        failed_text = None  # the body was not JSON, or not shaped like Groq's
                     if isinstance(failed_text, str) and failed_text.strip():
                         repaired = repair_json_str(extract_clean_json_str(failed_text), response_model)
                         if _parses_as_outline(repaired, response_model):
-                            return repaired
+                            return repaired  # the rejected answer was fixable: no new request needed
 
                     # 2. Endpoint rejected max_completion_tokens / max_tokens / reasoning_effort:
                     # retry immediately without those optional parameters
@@ -296,9 +310,10 @@ def call_openai_compatible_json(
                         or "json" in lowered_err
                     ):
                         break
+                # Any other HTTP error (401 bad key, 404 unknown model, 5xx, ...) cannot be fixed by retrying
                 raise RuntimeError(f"Provider API HTTP {http_err.code}: {err_body}") from http_err
 
-            choice0 = (resp_data.get("choices") or [{}])[0]
+            choice0 = (resp_data.get("choices") or [{}])[0]  # first (only) completion; {} if missing
             last_finish_reason = choice0.get("finish_reason")
             msg = choice0.get("message") or {}
             content = msg.get("content") or ""
@@ -306,18 +321,19 @@ def call_openai_compatible_json(
 
             # If content is empty, check if the model placed JSON inside a reasoning field
             if not cleaned or "{" not in cleaned:
-                reasoning_raw = msg.get("reasoning") or msg.get("reasoning_content") or ""
+                reasoning_raw = msg.get("reasoning") or msg.get("reasoning_content") or ""  # Groq / DeepSeek names
                 cand = repair_json_str(extract_clean_json_str(reasoning_raw), response_model)
                 if cand and _parses_as_outline(cand, response_model):
                     return cand
 
             if cleaned and "{" in cleaned:
-                return cleaned
+                return cleaned  # looks like JSON; the caller repairs and validates it
 
             # Empty content returned (e.g. json_object mode rejected silently or token limit hit):
             # break inner loop to retry without json_object mode.
             break
 
+    # All attempts returned nothing usable
     raise RuntimeError(
         f"The model `{model_name}` returned an empty response (finish_reason={last_finish_reason!r}). "
         "It may have exhausted its output token limit during internal reasoning. "
@@ -326,9 +342,11 @@ def call_openai_compatible_json(
 
 
 # Per-minute token limits (e.g. Groq free tier): the provider counts input + requested output cap
-MIN_USEFUL_OUTPUT_TOKENS = 1500
-TPM_RETRY_MAX_WAIT_S = 30
+MIN_USEFUL_OUTPUT_TOKENS = 1500  # never shrink the output cap below this: a smaller outline would be cut off
+TPM_RETRY_MAX_WAIT_S = 30  # longest "try again in Xs" the app is willing to sleep through
+# "Limit 8000, Used 1200, Requested 16550" (Used is optional; numbers may contain thousands commas)
 _LIMIT_RE = re.compile(r"Limit\s+([\d,]+)\s*,\s*(?:Used\s+([\d,]+)\s*,\s*)?Requested\s+([\d,]+)", re.IGNORECASE)
+# "try again in 1m7.5s" or "try again in 7.5s" (group 1 = minutes, group 2 = seconds)
 _RETRY_IN_RE = re.compile(r"try again in\s+(?:(\d+)m)?\s*([\d.]+)s", re.IGNORECASE)
 
 
@@ -340,16 +358,17 @@ def _parse_token_limit_error(body: str) -> Optional[Dict[str, Optional[float]]]:
     """Read 'Limit 8000, [Used 1200,] Requested 16550 ... try again in 7.5s' from a 413/429 error body."""
     m = _LIMIT_RE.search(body or "")
     if not m:
-        return None
-    nums = [int(g.replace(",", "")) if g else None for g in m.groups()]
+        return None  # not a token-limit message we understand
+    nums = [int(g.replace(",", "")) if g else None for g in m.groups()]  # "16,550" -> 16550; missing Used -> None
     r = _RETRY_IN_RE.search(body)
-    retry_after = (int(r.group(1) or 0) * 60 + float(r.group(2))) if r else None
+    retry_after = (int(r.group(1) or 0) * 60 + float(r.group(2))) if r else None  # total seconds
     return {"limit": nums[0], "used": nums[1], "requested": nums[2], "retry_after": retry_after}
 
 
 def _token_budget_message(model_name: str, info: Dict[str, Optional[float]], input_tokens: int) -> str:
     limit = int(info["limit"])
     if input_tokens < limit - MIN_USEFUL_OUTPUT_TOKENS:
+        # The request itself fits: the minute's budget is just used up by earlier requests
         wait = info.get("retry_after")
         when = f"about {wait:.0f} s" if wait else "a minute"
         return (
@@ -357,6 +376,7 @@ def _token_budget_message(model_name: str, info: Dict[str, Optional[float]], inp
             f"minute's budget is used up. Wait {when} and send again, ask for fewer slides, "
             "or switch to a model with a higher per-minute limit."
         )
+    # The prompt alone leaves no room for an answer: waiting will not help
     return (
         f"**This request is too large for `{model_name}` on your current provider plan.** The plan allows "
         f"{limit:,} tokens per minute, but the instructions plus your document already need about "
@@ -376,20 +396,22 @@ def _post_chat_completion(url: str, headers: Dict[str, str], payload: Dict[str, 
     - otherwise raise TokenBudgetError with a readable explanation.
     Other HTTP errors are re-raised as HTTPError with the body text in `.chatppt_body` (the stream is consumed).
     """
+    # Name of the output-cap field in this payload, or None if the caller set no cap
     cap_key = next((k for k in ("max_completion_tokens", "max_tokens") if k in payload), None)
-    waited = False
-    for _ in range(3):
+    waited = False  # the rate-limit wait is done at most once
+    for _ in range(3):  # first try + at most two fixes (shrink the cap and/or wait)
         req = urllib.request.Request(
             url.strip(), data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
         )
         try:
             with urllib.request.urlopen(req, timeout=90) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                return json.loads(resp.read().decode("utf-8"))  # success
         except urllib.error.HTTPError as http_err:
-            body = http_err.read().decode("utf-8", errors="ignore")
+            body = http_err.read().decode("utf-8", errors="ignore")  # the body can only be read once
+            # 413 = request too large, 429 = rate limited; only these carry token-limit details
             info = _parse_token_limit_error(body) if http_err.code in (413, 429) else None
             if not info:
-                http_err.chatppt_body = body
+                http_err.chatppt_body = body  # hand the already-read body to the caller
                 raise
             # "Requested" = prompt tokens + the output cap we reserved, so the prompt size is the difference
             cap = int(payload.get(cap_key, 0)) if cap_key else 0
@@ -397,15 +419,17 @@ def _post_chat_completion(url: str, headers: Dict[str, str], payload: Dict[str, 
             limit = int(info["limit"])
             if int(info["requested"]) > limit:
                 # The request alone is too big: shrink the output cap if what is left is still useful
-                room = limit - input_tokens - 100
+                room = limit - input_tokens - 100  # output tokens that still fit, minus a 100-token margin
                 if cap_key and cap > room >= MIN_USEFUL_OUTPUT_TOKENS:
-                    payload[cap_key] = room
+                    payload[cap_key] = room  # the caller's payload is updated too, on purpose
                     continue
             elif not waited and info["retry_after"] is not None and info["retry_after"] <= TPM_RETRY_MAX_WAIT_S:
+                # Fits in principle, but this minute's budget is spent: wait as told (+0.5 s), then resend
                 time.sleep(info["retry_after"] + 0.5)
                 waited = True
                 continue
             raise TokenBudgetError(_token_budget_message(model_name, info, input_tokens)) from http_err
+    # Three token-limit errors in a row
     raise TokenBudgetError(f"`{model_name}` kept hitting its per-minute token limit. Wait a minute and send again.")
 
 
@@ -413,9 +437,9 @@ def strip_think_tags(raw_text: Optional[str]) -> str:
     """Remove <think>...</think> blocks (and an unclosed trailing <think>) from a plain-text LLM reply."""
     if not raw_text or not isinstance(raw_text, str):
         return ""
-    cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)
+    cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)  # complete blocks
     if "<think>" in cleaned:
-        cleaned = cleaned[: cleaned.find("<think>")]
+        cleaned = cleaned[: cleaned.find("<think>")]  # unclosed block: drop everything from the tag on
     return cleaned.strip()
 
 
@@ -433,6 +457,7 @@ def call_gemini_text(
         contents=user_prompt,
         config=types.GenerateContentConfig(system_instruction=system_prompt, temperature=temperature),
     )
+    # .text can be None (e.g. a blocked response); treat that as empty
     text = strip_think_tags(getattr(response, "text", None) or "")
     if not text:
         raise RuntimeError(f"Google Gemini (`{model_name}`) returned an empty response.")
@@ -466,6 +491,7 @@ def call_openai_compatible_text(
     is_openai = "openai.com" in url_lower
     last_finish_reason = None
 
+    # Attempt 1 with the token-cap / reasoning parameters, attempt 2 without them
     for include_extra_params in (True, False):
         payload: Dict[str, object] = {
             "model": model_name,
@@ -476,6 +502,7 @@ def call_openai_compatible_text(
             "temperature": temperature,
         }
         if include_extra_params:
+            # Same parameter-name and reasoning-effort rules as call_openai_compatible_json
             if is_groq or is_openai or model_lower.startswith(("o1", "o3", "o4", "gpt-5")):
                 payload["max_completion_tokens"] = max_tokens
             else:
@@ -490,6 +517,7 @@ def call_openai_compatible_text(
         except urllib.error.HTTPError as http_err:
             err_body = getattr(http_err, "chatppt_body", "")
             lowered_err = err_body.lower()
+            # A 400 that names one of the optional parameters: retry without them
             if (
                 http_err.code == 400
                 and include_extra_params
@@ -503,6 +531,7 @@ def call_openai_compatible_text(
         text = strip_think_tags((choice0.get("message") or {}).get("content") or "")
         if text:
             return text
+        # Empty answer: the loop tries once more without the extra parameters
 
     raise RuntimeError(
         f"The model `{model_name}` returned an empty answer (finish_reason={last_finish_reason!r}). "
