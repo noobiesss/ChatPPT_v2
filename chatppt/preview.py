@@ -387,6 +387,11 @@ def render_slide_preview(
             draw(c, slide, t, theme)
         else:
             _bullet_cards(c, slide, t, theme)
+    # A custom template's background picture, stretched to the canvas like pptx_template does (closing reuses cover)
+    role = "section" if layout == "section_divider" else "cover" if layout in ("cover", "closing") else "content"
+    bg_image = theme.get(f"bg_image_{role}")
+    if bg_image:
+        bg += f" url('{bg_image}') center / 100% 100% no-repeat"
     font = theme.get("font_body") or theme.get("font_heading")
     font_css = f"--cpv-font:'{html.escape(font)}',system-ui,sans-serif;" if font else ""
     return (f'<div class="cpv-slide" style="background:{bg};{font_css}">{"".join(c.parts)}</div>', c.warnings)

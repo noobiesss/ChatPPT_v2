@@ -3,11 +3,13 @@
 Edit when: the uploaded template's look is not reproduced correctly (borders, fonts, colors, backgrounds).
 """
 
+import base64
 import copy
 import io
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional, Tuple
 
+from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.util import Inches
@@ -338,6 +340,7 @@ def _template_theme_plain(template_bytes: bytes, fallback_theme_name: str, use_t
     try:
         prs = Presentation(io.BytesIO(template_bytes))
         theme = extract_template_style(prs, fallback_theme_name=fallback_theme_name, use_template_colors=use_template_colors)
+        theme.update(template_background_images(prs))
     except Exception:  # noqa: BLE001 - a broken template previews with the fallback palette
         theme = dict(BUILTIN_THEMES.get(fallback_theme_name, BUILTIN_THEMES["Corporate Blue"]))
     return {k: tuple(v) if isinstance(v, RGBColor) else v for k, v in theme.items()}
@@ -693,3 +696,99 @@ def _create_slide_with_template(
             continue
 
     return slide
+
+
+def _bg_blip_blob(c_sld_parent_el, related_blob) -> Tuple[bool, Optional[bytes]]:
+    """(has its own <p:bg>, picture bytes if that background is a picture fill)."""
+    c_sld = c_sld_parent_el.find(f"{_NS_P}cSld")
+    bg_el = c_sld.find(f"{_NS_P}bg") if c_sld is not None else None
+    return _bg_el_blip_blob(bg_el, related_blob)
+
+
+def _bg_el_blip_blob(bg_el, related_blob) -> Tuple[bool, Optional[bytes]]:
+    if bg_el is None:
+        return False, None
+    blip = bg_el.find(f".//{_NS_A}blip")
+    r_id = blip.get(f"{_NS_R}embed") if blip is not None else None
+    if not r_id:
+        return True, None
+    try:
+        return True, related_blob(r_id)
+    except Exception:
+        return True, None
+
+
+def _full_bleed_picture_blob(shapes, slide_w_emu: int, slide_h_emu: int) -> Optional[bytes]:
+    """Bytes of the top-most full-bleed background picture among `shapes`, if any."""
+    for shape in reversed(list(shapes)):
+        try:
+            if hasattr(shape, "image") and _is_full_bleed_background_shape(shape, slide_w_emu, slide_h_emu):
+                return shape.image.blob
+        except Exception:
+            continue
+    return None
+
+
+def _background_image_for_role(prs: Presentation, role: str, prototypes: Dict[str, dict]) -> Optional[bytes]:
+    """
+    The background picture a rendered slide of this role shows, mirroring _create_slide_with_template:
+    a full-bleed picture (prototype slide, then layout, then master) sits on top of the <p:bg> fill,
+    and the first <p:bg> found on slide -> layout -> master decides whether that fill is a picture.
+    """
+    slide_w_emu = int(prs.slide_width or Inches(13.333))
+    slide_h_emu = int(prs.slide_height or Inches(7.5))
+    proto = prototypes.get(role) or prototypes.get("content") or {}
+    layout = _select_layout_for_role(prs, role, prototypes)
+    master = layout.slide_master
+    show_master = layout._element.get("showMasterSp", "1") != "0"
+
+    for item in proto.get("decor_items") or []:
+        if item["kind"] == "picture":
+            return item["blob"]
+    blob = _full_bleed_picture_blob(layout.shapes, slide_w_emu, slide_h_emu)
+    if blob is None and show_master:
+        blob = _full_bleed_picture_blob(master.shapes, slide_w_emu, slide_h_emu)
+    if blob is not None:
+        return blob
+
+    old_rels = proto.get("rels") or {}
+    found, blob = _bg_el_blip_blob(proto.get("bg_el"), lambda r_id: old_rels[r_id].target_part.blob)
+    if found:
+        return blob
+    for container in (layout, master):
+        found, blob = _bg_blip_blob(container._element, lambda r_id, p=container.part: p.related_part(r_id).blob)
+        if found:
+            return blob
+    return None
+
+
+def _preview_data_uri(blob: bytes, max_size: Tuple[int, int] = (1280, 720)) -> Optional[str]:
+    """Downscaled data: URI for the HTML preview; None for formats Pillow can't open (EMF/WMF/SVG)."""
+    try:
+        img = Image.open(io.BytesIO(blob))
+        img.thumbnail(max_size)
+        out = io.BytesIO()
+        if img.mode in ("RGBA", "LA", "P"):
+            img.convert("RGBA").save(out, format="PNG", optimize=True)
+            mime = "image/png"
+        else:
+            img.convert("RGB").save(out, format="JPEG", quality=80)
+            mime = "image/jpeg"
+    except Exception:
+        return None
+    return f"data:{mime};base64,{base64.b64encode(out.getvalue()).decode('ascii')}"
+
+
+def template_background_images(prs: Presentation) -> Dict[str, str]:
+    """{'bg_image_cover' | 'bg_image_section' | 'bg_image_content': data URI} for the slide previews."""
+    prototypes = _capture_template_prototypes(prs)
+    images: Dict[str, str] = {}
+    for role in ("cover", "section", "content"):
+        try:
+            blob = _background_image_for_role(prs, role, prototypes)
+        except Exception:  # noqa: BLE001 - a background we can't read previews as the plain color
+            continue
+        uri = _preview_data_uri(blob) if blob else None
+        if uri:
+            images[f"bg_image_{role}"] = uri
+    return images
