@@ -332,13 +332,21 @@ def extract_template_style(
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
-def template_theme_for_preview(template_bytes: bytes, fallback_theme_name: str, use_template_colors: bool) -> Dict[str, object]:
-    """Theme dict (colors + fonts) of an uploaded template, cached for the per-rerun wireframe previews."""
+def _template_theme_plain(template_bytes: bytes, fallback_theme_name: str, use_template_colors: bool) -> Dict[str, object]:
+    # RGBColor can't round-trip through pickle (it unpickles as RGBColor((r, g, b)) and fails),
+    # so the cache stores colors as plain tuples and template_theme_for_preview rebuilds them.
     try:
         prs = Presentation(io.BytesIO(template_bytes))
-        return extract_template_style(prs, fallback_theme_name=fallback_theme_name, use_template_colors=use_template_colors)
+        theme = extract_template_style(prs, fallback_theme_name=fallback_theme_name, use_template_colors=use_template_colors)
     except Exception:  # noqa: BLE001 - a broken template previews with the fallback palette
-        return dict(BUILTIN_THEMES.get(fallback_theme_name, BUILTIN_THEMES["Corporate Blue"]))
+        theme = dict(BUILTIN_THEMES.get(fallback_theme_name, BUILTIN_THEMES["Corporate Blue"]))
+    return {k: tuple(v) if isinstance(v, RGBColor) else v for k, v in theme.items()}
+
+
+def template_theme_for_preview(template_bytes: bytes, fallback_theme_name: str, use_template_colors: bool) -> Dict[str, object]:
+    """Theme dict (colors + fonts) of an uploaded template, cached for the per-rerun wireframe previews."""
+    plain = _template_theme_plain(template_bytes, fallback_theme_name, use_template_colors)
+    return {k: RGBColor(*v) if isinstance(v, tuple) and len(v) == 3 else v for k, v in plain.items()}
 
 
 @st.cache_data(show_spinner=False)
